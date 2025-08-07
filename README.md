@@ -1,12 +1,12 @@
 # Trajectory Reviewer
 
-A web-based application for reviewing and analyzing SWE-bench agentic trajectories with AI-powered assistance. This tool allows you to visualize, filter, search, and modify trajectory data with an integrated GPT-4.1 chat interface for intelligent analysis.
+A web-based application for reviewing and analyzing SWE-bench agentic trajectories with AI-powered assistance. This tool allows you to visualize, filter, search, and modify trajectory data with an integrated o3 chat interface for intelligent analysis.
 
 ## Features
 
 - **Trajectory Visualization**: View agent steps with thought, action, and observation data
 - **Step Navigation**: Navigate forward and backward through trajectory steps
-- **Keyword & AI Filtering**: Real-time search and semantic filtering with GPT-4.1
+- **Keyword & AI Filtering**: Real-time search and semantic filtering with o3
 - **Chat Integration**: Built-in AI assistant for trajectory analysis and patch leakage detection
 - **Search & Replace**: Global find/replace with regex support and file saving
 
@@ -84,4 +84,4 @@ Upload JSON files with this structure:
 
 - **Backend**: Flask server in `backend/app.py`
 - **Frontend**: React app in `frontend/src/`
-- **Model**: Currently uses `gpt-4.1` 
+- **Model**: Currently uses `o3` 
