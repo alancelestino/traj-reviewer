@@ -145,15 +145,97 @@ def replace():
     search_term = data.get('search_term')
     replace_term = data.get('replace_term')
 
+    logging.info(f"Replace request - search_term length: {len(search_term) if search_term else 0}, replace_term length: {len(replace_term) if replace_term else 0}")
+    logging.info(f"Search term (raw): {repr(search_term)}")
+    logging.info(f"Replace term (raw): {repr(replace_term)}")
+    logging.info(f"Content length: {len(content) if content else 0}")
+
     if not all([content, search_term, replace_term]):
         return jsonify({"error": "Missing required fields"}), 400
 
     try:
-        # Perform a global, case-sensitive replacement
-        modified_content = re.sub(search_term, replace_term, content)
+        # Normalize pattern so that actual newline characters in the incoming JSON
+        # match the literal "\\n" sequences present in the JSON file string values.
+        normalized_pattern = search_term.replace('\r\n', r'\\r\\n').replace('\n', r'\\n').replace('\r', r'\\r')
+        logging.info(f"Normalized regex pattern: {repr(normalized_pattern)}")
+
+        # Compile regex with DOTALL so "." matches across encoded segments if needed
+        pattern = re.compile(normalized_pattern, re.DOTALL)
+
+        # Count regex matches before replacement
+        occurrences_before = len(pattern.findall(content))
+        logging.info(f"Regex matches before: {occurrences_before}")
+        
+        if occurrences_before == 0:
+            return jsonify({"error": "Search term pattern did not match the content"}), 400
+
+        # Perform a global regex replacement using a function to preserve literal backslashes
+        def _repl(_match):
+            return replace_term
+        modified_content, replacements = pattern.subn(_repl, content)
+
+        logging.info(f"Replacements applied: {replacements}")
+
+        if replacements == 0 or modified_content == content:
+            logging.warning("Replace operation returned identical content - no changes made")
+            return jsonify({"error": "Replace operation did not modify the content. This might indicate an issue with the search pattern or content format."}), 400
+
+        # Validate JSON before returning to avoid frontend parse errors
+        try:
+            json.loads(modified_content)
+        except Exception as je:
+            logging.error(f"Modified content is not valid JSON: {je}")
+            return jsonify({"error": f"Modified content is not valid JSON: {je}"}), 400
+
         return jsonify({"modified_content": modified_content})
+    except re.error as rex:
+        logging.error(f"Regex error during replacement: {rex}")
+        return jsonify({"error": f"Invalid regex: {str(rex)}"}), 400
     except Exception as e:
         logging.error(f"An error occurred during replacement: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/replace_thought', methods=['POST'])
+def replace_thought():
+    data = request.json
+    content = data.get('content')
+    original_index = data.get('original_index')  # 1-based index in trajectory
+    old_thought = data.get('old_thought', '')
+    new_thought = data.get('new_thought', '')
+
+    if content is None or original_index is None or new_thought is None:
+        return jsonify({"error": "Missing required fields: content, original_index, new_thought"}), 400
+
+    try:
+        doc = json.loads(content)
+    except Exception as e:
+        return jsonify({"error": f"Input content is not valid JSON: {e}"}), 400
+
+    try:
+        traj = doc.get('trajectory')
+        if not isinstance(traj, list):
+            return jsonify({"error": "No trajectory array found in JSON"}), 400
+
+        idx0 = int(original_index) - 1
+        if idx0 < 0 or idx0 >= len(traj):
+            return jsonify({"error": f"original_index {original_index} is out of range"}), 400
+
+        step = traj[idx0]
+        if not isinstance(step, dict):
+            return jsonify({"error": f"Step at index {original_index} is not an object"}), 400
+
+        current_thought = step.get('thought', '')
+        # Optional validation: if old_thought provided, ensure it matches
+        if old_thought and current_thought != old_thought:
+            # Try to normalize Windows newlines to Unix for comparison
+            if current_thought.replace('\r\n', '\n') != old_thought.replace('\r\n', '\n'):
+                return jsonify({"error": "Current thought does not match the provided old_thought. Edit may be outdated."}), 409
+
+        step['thought'] = new_thought
+        modified_content = json.dumps(doc, indent=2)
+        return jsonify({"modified_content": modified_content})
+    except Exception as e:
+        logging.error(f"Error in replace_thought: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/save', methods=['POST'])

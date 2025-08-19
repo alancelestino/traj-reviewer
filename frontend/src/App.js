@@ -36,6 +36,33 @@ function App() {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   };
 
+  // Helper function to debug content structure
+  const debugContentStructure = (content, stepIndex) => {
+    console.log(`=== Debug Content Structure for Step ${stepIndex} ===`);
+    try {
+      const parsed = JSON.parse(content);
+      if (parsed.trajectory && Array.isArray(parsed.trajectory)) {
+        const step = parsed.trajectory[stepIndex - 1]; // Adjust for 0-based index
+        if (step) {
+          console.log('Step object:', step);
+          console.log('Thought field:', step.thought);
+          console.log('Thought type:', typeof step.thought);
+          console.log('Thought length:', step.thought?.length);
+          if (typeof step.thought === 'object') {
+            console.log('Thought object keys:', Object.keys(step.thought || {}));
+          }
+        } else {
+          console.log(`Step ${stepIndex} not found in trajectory`);
+        }
+      } else {
+        console.log('No trajectory array found in content');
+      }
+    } catch (error) {
+      console.log('Error parsing content:', error);
+    }
+    console.log('=== End Debug ===');
+  };
+
   useEffect(() => {
     const keywordSearchTerms = searchQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
 
@@ -277,26 +304,47 @@ function App() {
       console.log('Editing step:', editingStep);
       console.log('Edited thought:', editedThought);
       
-      // Use the replace endpoint to update the thought
-      const response = await fetch('http://localhost:5001/replace', {
+      // Get the current step's thought for debugging
+      const currentStepObj = filteredTrajectory.find(step => step.originalIndex === editingStep);
+      const originalThought = getStepText(currentStepObj?.thought);
+      console.log('Original thought from currentStep:', originalThought);
+      console.log('Original thought length:', originalThought?.length);
+      console.log('Edited thought length:', editedThought?.length);
+      
+      // Debug the content structure to see what we're working with
+      debugContentStructure(modifiedContent || fileContent, editingStep);
+      
+      // Check if the thoughts are actually different
+      if (originalThought === editedThought) {
+        console.log('Thoughts are identical - no change needed');
+        alert('No changes detected in the thought.');
+        setEditingStep(null);
+        setEditedThought('');
+        return;
+      }
+      
+      const contentToUpdate = modifiedContent || fileContent;
+
+      // Use JSON-safe endpoint to update this trajectory step's thought
+      const response = await fetch('http://localhost:5001/replace_thought', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          content: modifiedContent || fileContent,
-          search_term: escapeRegExp(getStepText(currentStep.thought)),
-          replace_term: editedThought,
+          content: contentToUpdate,
+          original_index: editingStep,
+          old_thought: originalThought,
+          new_thought: editedThought,
         }),
       });
 
       const data = await response.json();
-      console.log('Replace response:', data);
+      console.log('replace_thought response:', data);
       
       if (data.error) {
         throw new Error(data.error);
       }
 
       // Update the modified content
-      console.log('Setting modifiedContent to:', data.modified_content?.substring(0, 100) + '...');
       setModifiedContent(data.modified_content);
       
       // Reload the trajectory with the updated content
@@ -358,27 +406,29 @@ function App() {
         throw new Error(data.error);
       }
 
-      // Now use the replace endpoint to update the thought
-      console.log('Calling replace endpoint with generated thought');
-      const replaceResponse = await fetch('http://localhost:5001/replace', {
+      const originalThought = getStepText(currentStep.thought);
+      const contentToUpdate = modifiedContent || fileContent;
+
+      // JSON-safe update of the specific step's thought
+      const replaceResponse = await fetch('http://localhost:5001/replace_thought', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          content: modifiedContent || fileContent,
-          search_term: escapeRegExp(getStepText(currentStep.thought)),
-          replace_term: data.generated_thought,
+          content: contentToUpdate,
+          original_index: currentStep.originalIndex,
+          old_thought: originalThought,
+          new_thought: data.generated_thought,
         }),
       });
 
       const replaceData = await replaceResponse.json();
-      console.log('Replace response:', replaceData);
+      console.log('replace_thought response:', replaceData);
       
       if (replaceData.error) {
         throw new Error(replaceData.error);
       }
 
       // Update the modified content
-      console.log('Setting modifiedContent to:', replaceData.modified_content?.substring(0, 100) + '...');
       setModifiedContent(replaceData.modified_content);
       
       // Reload the trajectory with the updated content
