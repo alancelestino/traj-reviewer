@@ -17,6 +17,7 @@ function App() {
   const [editingStep, setEditingStep] = useState(null);
   const [editedThought, setEditedThought] = useState('');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [generatingThought, setGeneratingThought] = useState(null);
 
   const getStepText = (value, isStepZero = false) => {
     if (!value) return '';
@@ -28,6 +29,11 @@ function App() {
     if (typeof value === 'object' && value.text) return value.text;
     if (typeof value === 'string') return value;
     return '';
+  };
+
+  // Helper function to escape regex special characters
+  const escapeRegExp = (string) => {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   };
 
   useEffect(() => {
@@ -59,10 +65,55 @@ function App() {
     }
 
     setFilteredTrajectory(newFiltered);
-    setCurrentIndex(0);
-  }, [searchQuery, trajectory, semanticFilter]);
+    
+    // Only reset to first step if we don't have a current step or if current step is not in filtered results
+    if (currentIndex >= newFiltered.length || newFiltered.length === 0) {
+      setCurrentIndex(0);
+    } else {
+      // Try to keep the same step if it's still available in filtered results
+      const currentStep = filteredTrajectory[currentIndex];
+      if (currentStep) {
+        const newIndex = newFiltered.findIndex(step => step.originalIndex === currentStep.originalIndex);
+        if (newIndex !== -1) {
+          setCurrentIndex(newIndex);
+        } else {
+          setCurrentIndex(0);
+        }
+      } else {
+        setCurrentIndex(0);
+      }
+    }
+  }, [searchQuery, trajectory, semanticFilter, currentIndex, filteredTrajectory]);
 
-  const loadTrajectory = (contentString) => {
+  // Separate effect to handle position restoration when filters are cleared
+  useEffect(() => {
+    // Only run when filters are completely cleared
+    if (!searchQuery.trim() && !semanticFilter) {
+      console.log('Filters cleared - staying at current filtered position');
+      
+      // Find the current filtered step in the unfiltered trajectory
+      if (filteredTrajectory.length > 0 && currentIndex < filteredTrajectory.length) {
+        const currentFilteredStep = filteredTrajectory[currentIndex];
+        if (currentFilteredStep) {
+          // Find this step in the unfiltered trajectory
+          const unfilteredIndex = trajectory.findIndex(step => step.originalIndex === currentFilteredStep.originalIndex);
+          if (unfilteredIndex !== -1) {
+            console.log('Staying at step with original index:', currentFilteredStep.originalIndex);
+            // Keep the same currentIndex since we're staying on the same step
+          } else {
+            console.log('Current filtered step not found in unfiltered trajectory, resetting to 0');
+            setCurrentIndex(0);
+          }
+        }
+      }
+    }
+  }, [filteredTrajectory, searchQuery, semanticFilter, trajectory, currentIndex]);
+
+  const loadTrajectory = (contentString, clearModifiedContent = true) => {
+    console.log('loadTrajectory called, clearModifiedContent:', clearModifiedContent);
+    console.log('Content string length:', contentString?.length);
+    console.log('Current modifiedContent before load:', modifiedContent);
+    
     try {
       const data = JSON.parse(contentString);
       let processedTrajectory = [];
@@ -90,6 +141,13 @@ function App() {
       handleClearFilters();
       setChatKey(key => key + 1);
       setHasUnsavedChanges(false);
+      
+      if (clearModifiedContent) {
+        setModifiedContent(''); // Clear any previous modifications
+        console.log('Cleared modifiedContent in loadTrajectory');
+      } else {
+        console.log('Preserved modifiedContent in loadTrajectory');
+      }
     } catch (error) {
       alert('Error parsing JSON file.');
       console.error("File parsing error:", error);
@@ -116,22 +174,33 @@ function App() {
       alert('Please enter a search term for replacement.');
       return;
     }
+    
+    console.log('handleReplace called');
+    console.log('replaceSearch:', replaceSearch);
+    console.log('replaceWith:', replaceWith);
+    console.log('Current modifiedContent:', modifiedContent);
+    console.log('Current fileContent length:', fileContent?.length);
+    
     try {
       const response = await fetch('http://localhost:5001/replace', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           content: modifiedContent || fileContent,
-          search_term: replaceSearch,
+          search_term: escapeRegExp(replaceSearch),
           replace_term: replaceWith,
         }),
       });
       const data = await response.json();
+      console.log('Replace response:', data);
+      
       if (data.error) {
         throw new Error(data.error);
       }
+      
+      console.log('Setting modifiedContent to:', data.modified_content?.substring(0, 100) + '...');
       setModifiedContent(data.modified_content);
-      loadTrajectory(data.modified_content);
+      loadTrajectory(data.modified_content, false); // Don't clear modifiedContent
       alert('Replacement successful!');
       setHasUnsavedChanges(true);
     } catch (error) {
@@ -140,83 +209,57 @@ function App() {
   };
 
   const handleSave = async () => {
+    console.log('handleSave called');
+    console.log('modifiedContent exists:', !!modifiedContent);
+    console.log('modifiedContent length:', modifiedContent?.length);
+    console.log('fileContent length:', fileContent?.length);
+    console.log('hasUnsavedChanges:', hasUnsavedChanges);
+    
     let contentToSave;
     
     if (modifiedContent) {
-      // Use the modified content from search & replace
+      // Use the modified content from search & replace or thought edits
       contentToSave = modifiedContent;
+      console.log('Using modifiedContent for save');
     } else {
-      // Reconstruct JSON with thought edits - need to update all references
-      const originalData = JSON.parse(fileContent);
-      let updatedData = JSON.parse(JSON.stringify(originalData)); // Deep copy
-      
-      // Build a map of original thoughts to edited thoughts
-      const thoughtChanges = new Map();
-      trajectory.filter(step => !step.isStepZero).forEach(step => {
-        const originalStep = originalData.trajectory[step.originalIndex - 1];
-        const originalThought = getStepText(originalStep.thought);
-        const editedThought = getStepText(step.thought);
-        
-        if (originalThought !== editedThought) {
-          thoughtChanges.set(originalThought, editedThought);
-        }
-      });
-      
-      // Function to recursively update any string that contains old thoughts
-      const updateThoughtReferences = (obj) => {
-        if (typeof obj === 'string') {
-          let updatedString = obj;
-          for (const [originalThought, editedThought] of thoughtChanges) {
-            updatedString = updatedString.replace(new RegExp(escapeRegExp(originalThought), 'g'), editedThought);
-          }
-          return updatedString;
-        } else if (Array.isArray(obj)) {
-          return obj.map(updateThoughtReferences);
-        } else if (obj !== null && typeof obj === 'object') {
-          const updated = {};
-          for (const [key, value] of Object.entries(obj)) {
-            updated[key] = updateThoughtReferences(value);
-          }
-          return updated;
-        }
-        return obj;
-      };
-      
-      // Helper function to escape special regex characters
-      const escapeRegExp = (string) => {
-        return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      };
-      
-      // Apply the updates to the entire data structure
-      updatedData = updateThoughtReferences(updatedData);
-      
-      contentToSave = JSON.stringify(updatedData, null, 2);
+      // No modifications to save
+      console.log('No modifiedContent, showing alert');
+      alert('No changes to save.');
+      return;
     }
 
-    console.log("Content to save:", contentToSave); // Debug log
+    // Prompt for filename with "modified_" prefix as default
+    const defaultFileName = `modified_${fileName}`;
+    const newFileName = prompt("Enter new file name:", defaultFileName);
+    
+    if (!newFileName) {
+      console.log('User cancelled save');
+      return;
+    }
 
-    const newFileName = prompt("Enter new file name (e.g., 'new_trajectory.json'):", `modified_${fileName}`);
-    if (newFileName) {
-      try {
-        const response = await fetch('http://localhost:5001/save', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            content: contentToSave,
-            filename: newFileName,
-          }),
-        });
-        const data = await response.json();
-        if (data.error) {
-          throw new Error(data.error);
-        }
-        console.log("Save response:", data); // Debug log
-        alert(data.message);
-        setHasUnsavedChanges(false);
-      } catch (error) {
-        console.error("Save error:", error); // Debug log
-        alert(`Save failed: ${error.message}`);
+    try {
+      console.log('Sending save request with content length:', contentToSave.length);
+      const response = await fetch('http://localhost:5001/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: contentToSave,
+          filename: newFileName,
+        }),
+      });
+      const data = await response.json();
+      if (data.error) {
+        throw new Error(data.error);
       }
+      console.log("Save response:", data);
+      alert(data.message);
+      setHasUnsavedChanges(false);
+      // Update fileContent to reflect the saved state
+      setFileContent(contentToSave);
+      setModifiedContent(''); // Clear modified content after successful save
+    } catch (error) {
+      console.error("Save error:", error);
+      alert(`Save failed: ${error.message}`);
     }
   };
 
@@ -226,15 +269,49 @@ function App() {
     setEditedThought(getStepText(step.thought));
   };
 
-  const handleSaveThought = () => {
-    setTrajectory(prev => prev.map(step => 
-      step.originalIndex === editingStep 
-        ? { ...step, thought: editedThought }
-        : step
-    ));
-    setEditingStep(null);
-    setEditedThought('');
-    setHasUnsavedChanges(true);
+  const handleSaveThought = async () => {
+    try {
+      console.log('handleSaveThought called');
+      console.log('Current modifiedContent:', modifiedContent);
+      console.log('Current fileContent length:', fileContent?.length);
+      console.log('Editing step:', editingStep);
+      console.log('Edited thought:', editedThought);
+      
+      // Use the replace endpoint to update the thought
+      const response = await fetch('http://localhost:5001/replace', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: modifiedContent || fileContent,
+          search_term: escapeRegExp(getStepText(currentStep.thought)),
+          replace_term: editedThought,
+        }),
+      });
+
+      const data = await response.json();
+      console.log('Replace response:', data);
+      
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      // Update the modified content
+      console.log('Setting modifiedContent to:', data.modified_content?.substring(0, 100) + '...');
+      setModifiedContent(data.modified_content);
+      
+      // Reload the trajectory with the updated content
+      loadTrajectory(data.modified_content, false); // Don't clear modifiedContent
+      
+      // Reset edit state
+      setEditingStep(null);
+      setEditedThought('');
+      setHasUnsavedChanges(true);
+      
+      alert('Thought updated successfully!');
+    } catch (error) {
+      console.error('Error updating thought:', error);
+      alert(`Failed to update thought: ${error.message}`);
+    }
   };
 
   const handleCancelEdit = () => {
@@ -242,9 +319,86 @@ function App() {
     setEditedThought('');
   };
 
+  const handleGenerateThought = async (stepIndex) => {
+    const currentStep = filteredTrajectory[stepIndex];
+    setGeneratingThought(currentStep.originalIndex);
+
+    try {
+      console.log('handleGenerateThought called');
+      console.log('Current modifiedContent:', modifiedContent);
+      console.log('Current fileContent length:', fileContent?.length);
+      console.log('Current step thought:', getStepText(currentStep.thought));
+      
+      // Get previous steps (all steps up to the current one)
+      const previousSteps = trajectory.filter(step => 
+        step.originalIndex < currentStep.originalIndex
+      );
+
+      // Get the tool call from the action (assuming action contains the tool call)
+      const toolCall = getStepText(currentStep.action);
+
+      const response = await fetch('http://localhost:5001/generate_thought', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          current_step: currentStep,
+          previous_steps: previousSteps,
+          tool_call: toolCall
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Network response was not ok');
+      }
+
+      const data = await response.json();
+      console.log('Generate thought response:', data);
+      
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      // Now use the replace endpoint to update the thought
+      console.log('Calling replace endpoint with generated thought');
+      const replaceResponse = await fetch('http://localhost:5001/replace', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: modifiedContent || fileContent,
+          search_term: escapeRegExp(getStepText(currentStep.thought)),
+          replace_term: data.generated_thought,
+        }),
+      });
+
+      const replaceData = await replaceResponse.json();
+      console.log('Replace response:', replaceData);
+      
+      if (replaceData.error) {
+        throw new Error(replaceData.error);
+      }
+
+      // Update the modified content
+      console.log('Setting modifiedContent to:', replaceData.modified_content?.substring(0, 100) + '...');
+      setModifiedContent(replaceData.modified_content);
+      
+      // Reload the trajectory with the updated content
+      loadTrajectory(replaceData.modified_content, false); // Don't clear modifiedContent
+      
+      setHasUnsavedChanges(true);
+      alert('Thought generated and updated successfully!');
+
+    } catch (error) {
+      console.error('Error generating thought:', error);
+      alert(`Failed to generate thought: ${error.message}`);
+    } finally {
+      setGeneratingThought(null);
+    }
+  };
+
   const handleClearFilters = () => {
     setSearchQuery('');
     setSemanticFilter(null);
+    // The useEffect will handle position restoration automatically
   };
 
   const goToPrevious = () => {
@@ -369,7 +523,12 @@ function App() {
                             <button onClick={handleCancelEdit} className="cancel-edit-btn">Cancel</button>
                           </div>
                         ) : (
-                          <button onClick={() => handleEditThought(currentIndex)} className="edit-btn">Edit</button>
+                          <div className="edit-buttons">
+                            <button onClick={() => handleEditThought(currentIndex)} className="edit-btn">Edit</button>
+                            <button onClick={() => handleGenerateThought(currentIndex)} className="generate-edit-btn" disabled={generatingThought === currentStep.originalIndex}>
+                              {generatingThought === currentStep.originalIndex ? 'Generating...' : 'Generate with AI'}
+                            </button>
+                          </div>
                         )}
                       </div>
                       {editingStep === currentStep.originalIndex ? (

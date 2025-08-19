@@ -127,7 +127,7 @@ def chat():
 
     try:
         response = client.chat.completions.create(
-            model="o3",
+            model="gpt-5",
             messages=full_messages,
             tools=tools,
             tool_choice="auto",
@@ -184,6 +184,58 @@ def save():
         return jsonify({"message": f"File saved successfully to {filepath}"})
     except Exception as e:
         logging.error(f"An error occurred during save: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/generate_thought', methods=['POST'])
+def generate_thought():
+    data = request.json
+    current_step = data.get('current_step')
+    previous_steps = data.get('previous_steps', [])
+    tool_call = data.get('tool_call', '')
+
+    if not current_step:
+        return jsonify({"error": "Current step is required"}), 400
+
+    # Create the prompt for thought generation
+    prompt = f"""You are the assistant and you are just about calling this tool:
+
+{tool_call}
+
+Given the previous conversation, justify why you are calling this tool. Use first person tone in a similar style as the other assistant messages.
+
+Previous steps context:
+"""
+
+    # Add previous steps context
+    for i, step in enumerate(previous_steps):
+        if step.get('isStepZero'):
+            step_text = ""
+            step_content = step.get("content")
+            if isinstance(step_content, list) and len(step_content) > 0:
+                first_item = step_content[0]
+                if isinstance(first_item, dict):
+                    step_text = first_item.get("text", "")
+            prompt += f"\nStep 0: {step_text}\n"
+        else:
+            thought = step.get('thought', '')
+            action = step.get('action', '')
+            observation = step.get('observation', '')
+            prompt += f"\nStep {step.get('originalIndex', i)}:\nThought: {thought}\nAction: {action}\nObservation: {observation}\n"
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-5",
+            messages=[
+                {"role": "system", "content": "You are an AI assistant helping to generate thoughts for trajectory steps. Generate concise, first-person thoughts that explain the reasoning behind tool calls."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=1.0
+        )
+        
+        generated_thought = response.choices[0].message.content
+        return jsonify({"generated_thought": generated_thought})
+    except Exception as e:
+        logging.error(f"An error occurred while generating thought: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':

@@ -262,6 +262,25 @@ input[type="file"] {
   background-color: #2980b9;
 }
 
+.generate-edit-btn {
+  background-color: #9b59b6;
+  color: white;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.generate-edit-btn:hover:not(:disabled) {
+  background-color: #8e44ad;
+}
+
+.generate-edit-btn:disabled {
+  background-color: #bdc3c7;
+  cursor: not-allowed;
+}
+
 .edit-buttons {
   display: flex;
   gap: 8px;
