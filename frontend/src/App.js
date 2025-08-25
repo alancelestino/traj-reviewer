@@ -445,6 +445,51 @@ function App() {
     }
   };
 
+  const handleRemoveStep = async (stepIndex) => {
+    const step = filteredTrajectory[stepIndex];
+    if (!step) return;
+    if (step.isStepZero || step.originalIndex === 0) {
+      alert('Cannot remove Step 0.');
+      return;
+    }
+
+    if (!window.confirm(`Remove step ${step.originalIndex}? This cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      console.log('handleRemoveStep called');
+      const contentToUpdate = modifiedContent || fileContent;
+      const response = await fetch('http://localhost:5001/remove_step', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: contentToUpdate,
+          original_index: step.originalIndex,
+        }),
+      });
+
+      const data = await response.json();
+      console.log('remove_step response:', data);
+
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      setModifiedContent(data.modified_content);
+      loadTrajectory(data.modified_content, false);
+      setHasUnsavedChanges(true);
+
+      // Move selection to previous item if possible
+      setCurrentIndex((prev) => (prev > 0 ? prev - 1 : 0));
+
+      alert(`Removed step ${step.originalIndex} successfully.`);
+    } catch (error) {
+      console.error('Error removing step:', error);
+      alert(`Failed to remove step: ${error.message}`);
+    }
+  };
+
   const handleClearFilters = () => {
     setSearchQuery('');
     setSemanticFilter(null);
@@ -577,6 +622,9 @@ function App() {
                             <button onClick={() => handleEditThought(currentIndex)} className="edit-btn">Edit</button>
                             <button onClick={() => handleGenerateThought(currentIndex)} className="generate-edit-btn" disabled={generatingThought === currentStep.originalIndex}>
                               {generatingThought === currentStep.originalIndex ? 'Generating...' : 'Generate with AI'}
+                            </button>
+                            <button onClick={() => handleRemoveStep(currentIndex)} className="remove-edit-btn" disabled={currentStep.originalIndex === 0}>
+                              Remove
                             </button>
                           </div>
                         )}
