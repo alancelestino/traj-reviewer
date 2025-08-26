@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import './Chat.css';
 
-const Chat = ({ trajectory, onFilter }) => {
+const Chat = ({ history, onFilter }) => {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -25,7 +25,7 @@ const Chat = ({ trajectory, onFilter }) => {
       const response = await fetch('http://localhost:5001/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: newMessages, trajectory }),
+        body: JSON.stringify({ messages: newMessages, history }),
       });
 
       if (!response.ok) {

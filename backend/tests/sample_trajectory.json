@@ -1,0 +1,80 @@
+{
+  "trajectory": [
+    {
+      "action": "action_1",
+      "observation": "observation_1",
+      "response": "thought_1",
+      "thought": "thought_1",
+      "execution_time": 0.12,
+      "state": {"working_dir": "/repo", "diff": ""},
+      "query": [
+        {"role": "system", "content": "System prompt", "agent": "main", "message_type": "system_prompt"},
+        {"role": "user", "content": "Initial user instruction", "agent": "main", "message_type": "observation"}
+      ],
+      "extra_info": {}
+    },
+    {
+      "action": "action_2",
+      "observation": "observation_2",
+      "response": "thought_2",
+      "thought": "thought_2",
+      "execution_time": 0.23,
+      "state": {"working_dir": "/repo", "diff": ""},
+      "query": [
+        {"role": "system", "content": "System prompt", "agent": "main", "message_type": "system_prompt"},
+        {"role": "user", "content": "Initial user instruction", "agent": "main", "message_type": "observation"},
+        {"role": "assistant", "content": "thought_1", "thought": "thought_1", "action": "action_1", "agent": "main", "tool_calls": [{"index": 0, "name": null, "function": {"arguments": "{\"command\": \"view\"}", "name": "action_1"}, "id": "action_1", "type": "function"}], "message_type": "action", "thinking_blocks": []},
+        {"role": "tool", "content": "OBSERVATION for action_1", "agent": "main", "message_type": "observation", "tool_call_ids": ["action_1"]}
+      ],
+      "extra_info": {}
+    },
+    {
+      "action": "action_3",
+      "observation": "observation_3",
+      "response": "thought_3",
+      "thought": "thought_3",
+      "execution_time": 0.34,
+      "state": {"working_dir": "/repo", "diff": ""},
+      "query": [
+        {"role": "system", "content": "System prompt", "agent": "main", "message_type": "system_prompt"},
+        {"role": "user", "content": "Initial user instruction", "agent": "main", "message_type": "observation"},
+        {"role": "assistant", "content": "thought_1", "thought": "thought_1", "action": "action_1", "agent": "main", "tool_calls": [{"index": 0, "name": null, "function": {"arguments": "{\"command\": \"view\"}", "name": "action_1"}, "id": "action_1", "type": "function"}], "message_type": "action", "thinking_blocks": []},
+        {"role": "tool", "content": "OBSERVATION for action_1", "agent": "main", "message_type": "observation", "tool_call_ids": ["action_1"]},
+        {"role": "assistant", "content": "thought_2", "thought": "thought_2", "action": "action_2", "agent": "main", "tool_calls": [{"index": 0, "name": null, "function": {"arguments": "{\"command\": \"view\"}", "name": "action_2"}, "id": "action_2", "type": "function"}], "message_type": "action", "thinking_blocks": []},
+        {"role": "tool", "content": "OBSERVATION for action_2", "agent": "main", "message_type": "observation", "tool_call_ids": ["action_2"]}
+      ],
+      "extra_info": {}
+    }
+  ],
+  "history": [
+    {"role": "system", "content": "System prompt", "agent": "main", "message_type": "system_prompt"},
+    {"role": "user", "content": "Initial user instruction", "agent": "main", "message_type": "observation"},
+    {"role": "assistant", "content": "thought_1", "thought": "thought_1", "action": "action_1", "agent": "main", "message_type": "action"},
+    {"role": "tool", "content": "OBSERVATION for action_1", "agent": "main", "message_type": "observation"},
+    {"role": "assistant", "content": "thought_2", "thought": "thought_2", "action": "action_2", "agent": "main", "message_type": "action"},
+    {"role": "tool", "content": "OBSERVATION for action_2", "agent": "main", "message_type": "observation"},
+    {"role": "assistant", "content": "thought_3", "thought": "thought_3", "action": "action_3", "agent": "main", "message_type": "action"},
+    {"role": "tool", "content": "OBSERVATION for action_3", "agent": "main", "message_type": "observation"}
+  ],
+  "info": {
+    "swe_agent_hash": "hash",
+    "swe_agent_version": "1.1.0",
+    "swe_rex_version": "1.3.0",
+    "swe_rex_hash": "unavailable",
+    "submission": "",
+    "exit_status": "submitted",
+    "exited_files30": "",
+    "exited_files50": "",
+    "exited_files70": "",
+    "model_stats": {
+      "instance_cost": 0.0,
+      "tokens_sent": 0,
+      "tokens_received": 0,
+      "api_calls": 3
+    }
+  },
+  "replay_config": "{\"env\": \"local\"}",
+  "environment": "image:latest"
+}
+
+

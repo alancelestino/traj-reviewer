@@ -154,46 +154,33 @@ def build_mock_trajectory(num_steps=3):
     return doc
 
 
-def test_replace_thought_cascades(client):
+def test_replace_thought_history_only(client):
     doc = build_mock_trajectory(num_steps=3)
     content = json.dumps(doc)
 
-    # Replace thought at step i=2 (original_index=2)
+    # Replace thought at step j=2 (assistant at history[4])
+    assistant_idx = 2 * 2
     payload = {
         "content": content,
         "original_index": 2,
-        "old_thought": doc["trajectory"][1]["thought"],
+        "old_thought": doc["history"][assistant_idx]["thought"],
         "new_thought": "NEW_THOUGHT",
     }
     resp = client.post('/replace_thought', json=payload)
     assert resp.status_code == 200, resp.get_json()
     updated = json.loads(resp.get_json()["modified_content"])
 
-    # Step i updated
-    assert updated["trajectory"][1]["thought"] == "NEW_THOUGHT"
-    assert updated["trajectory"][1]["response"] == "NEW_THOUGHT"
-
-    # For all j>i, query[2*i+2] updated. i=1 (zero-based), idx = 2*1+2 = 4
-    idx0 = 1
-    msg_idx = 2 * idx0 + 2
-    for j in range(2, len(updated["trajectory"])):
-        q = updated["trajectory"][j].get("query", [])
-        if len(q) > msg_idx and isinstance(q[msg_idx], dict):
-            assert q[msg_idx].get("thought") == "NEW_THOUGHT"
-            assert q[msg_idx].get("content") == "NEW_THOUGHT"
-
-    # history[2*i+2] updated
-    history = updated.get("history", [])
-    if len(history) > msg_idx and isinstance(history[msg_idx], dict):
-        assert history[msg_idx].get("thought") == "NEW_THOUGHT"
-        assert history[msg_idx].get("content") == "NEW_THOUGHT"
+    assert set(updated.keys()) == {"history"}
+    hist = updated["history"]
+    assert hist[assistant_idx]["thought"] == "NEW_THOUGHT"
+    assert hist[assistant_idx]["content"] == "NEW_THOUGHT"
 
 
-def test_remove_step_cascades(client):
+def test_remove_step_history_pair(client):
     doc = build_mock_trajectory(num_steps=4)
     content = json.dumps(doc)
 
-    # Remove step i=2 (original_index=2)
+    # Remove step j=2 => remove history[4] and history[5]
     payload = {
         "content": content,
         "original_index": 2,
@@ -202,32 +189,18 @@ def test_remove_step_cascades(client):
     assert resp.status_code == 200, resp.get_json()
     updated = json.loads(resp.get_json()["modified_content"])
 
-    # trajectory[i] removed
-    assert len(updated["trajectory"]) == len(doc["trajectory"]) - 1
+    assert set(updated.keys()) == {"history"}
+    old_hist = doc["history"]
+    new_hist = updated["history"]
+    assert len(new_hist) == len(old_hist) - 2
 
-    # For all j > i (after removal j starts at idx0), ensure messages for removed step are gone
-    removed_step_thought = "thought_2"
-    removed_step_action = "action_2"
-    removed_tool_obs = f"OBSERVATION for {removed_step_action}"
-
-    for j in range(1, len(updated["trajectory"])):
-        q = updated["trajectory"][j].get("query", [])
-        for msg in q:
-            if isinstance(msg, dict):
-                assert msg.get("thought") != removed_step_thought
-                assert msg.get("content") != removed_step_thought
-                assert msg.get("content") != removed_tool_obs
-
-    # history entries for removed step are gone
-    hist = updated.get("history", [])
-    for msg in hist:
-        if isinstance(msg, dict):
-            assert msg.get("thought") != removed_step_thought
-            assert msg.get("content") not in {removed_step_thought, removed_tool_obs}
-
-    # api_calls decreased by 1
-    orig_calls = doc["info"]["model_stats"]["api_calls"]
-    new_calls = updated["info"]["model_stats"]["api_calls"]
-    assert new_calls == max(0, orig_calls - 1)
+    removed_assistant = old_hist[4]
+    removed_tool = old_hist[5]
+    serialized = json.dumps(new_hist)
+    # Ensure removed messages' unique contents are gone
+    if isinstance(removed_assistant, dict):
+        assert removed_assistant.get("content", "") not in serialized
+    if isinstance(removed_tool, dict):
+        assert removed_tool.get("content", "") not in serialized
 
 

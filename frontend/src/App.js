@@ -4,6 +4,7 @@ import Chat from './Chat';
 
 function App() {
   const [trajectory, setTrajectory] = useState([]);
+  const [history, setHistory] = useState([]);
   const [filteredTrajectory, setFilteredTrajectory] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [fileName, setFileName] = useState('');
@@ -143,26 +144,47 @@ function App() {
     
     try {
       const data = JSON.parse(contentString);
+      const hist = Array.isArray(data.history) ? data.history : [];
+
+      // Persist canonical history in state for Chat
+      setHistory(hist);
+
       let processedTrajectory = [];
 
-      // Handle Step 0 from history
-      if (data.history && data.history.length > 1) {
+      // Step 0 from history[1]
+      if (hist.length > 1) {
         processedTrajectory.push({
-          ...data.history[1],
+          ...hist[1],
           originalIndex: 0,
           isStepZero: true,
         });
       }
 
-      // Handle the rest of the trajectory
-      if (data.trajectory && Array.isArray(data.trajectory)) {
-        const trajectoryWithOriginalIndex = data.trajectory.map((step, index) => ({
-          ...step,
-          originalIndex: index + 1
-        }));
-        processedTrajectory = [...processedTrajectory, ...trajectoryWithOriginalIndex];
+      // Subsequent steps: pairs (assistant at even i, tool at i+1)
+      // history[2] & history[3] => step 1, etc.
+      let stepNumber = 1;
+      for (let i = 2; i + 1 < hist.length; i += 2) {
+        const assistant = typeof hist[i] === 'object' && hist[i] !== null ? hist[i] : {};
+        const toolMsg = typeof hist[i + 1] === 'object' && hist[i + 1] !== null ? hist[i + 1] : {};
+
+        const thought = getStepText(assistant.thought);
+        const action = getStepText(assistant.action);
+        let observation = getStepText(toolMsg.content);
+        try {
+          if (typeof observation === 'string' && observation.includes('OBSERVATION:\n')) {
+            observation = observation.split('OBSERVATION:\n')[1];
+          }
+        } catch (_) {}
+
+        processedTrajectory.push({
+          thought,
+          action,
+          observation,
+          originalIndex: stepNumber,
+        });
+        stepNumber += 1;
       }
-      
+
       setTrajectory(processedTrajectory);
       // Reset all filters and the chat component
       handleClearFilters();
@@ -187,10 +209,19 @@ function App() {
       setFileName(file.name);
       const reader = new FileReader();
       reader.onload = (e) => {
-        const content = e.target.result;
-        setFileContent(content);
+        const raw = e.target.result;
         setModifiedContent(''); // Clear any previous modifications
-        loadTrajectory(content);
+        try {
+          const parsed = JSON.parse(raw);
+          const hist = Array.isArray(parsed.history) ? parsed.history : [];
+          const canonical = JSON.stringify({ history: hist }, null, 2);
+          setFileContent(canonical);
+          loadTrajectory(canonical);
+        } catch (_) {
+          // If not JSON, fallback (will likely error in loadTrajectory)
+          setFileContent(raw);
+          loadTrajectory(raw);
+        }
       };
       reader.readAsText(file);
     }
@@ -663,7 +694,7 @@ function App() {
           </main>
         </div>
         <div className="chat-pane">
-          <Chat key={chatKey} trajectory={trajectory} onFilter={handleSemanticFilter} />
+          <Chat key={chatKey} history={history} onFilter={handleSemanticFilter} />
         </div>
       </div>
     </div>

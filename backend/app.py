@@ -90,33 +90,62 @@ def index():
 def chat():
     data = request.json
     messages = data.get('messages', [])
-    trajectory = data.get('trajectory', [])
+    history = data.get('history')
 
     if not messages:
         return jsonify({"error": "No messages provided"}), 400
 
-    # Sanitize trajectory to only include necessary fields and adjust step numbers
+    # Build sanitized steps from history-only representation
     sanitized_trajectory = []
-    for step in trajectory:
-        if step.get('isStepZero'):
+    try:
+        if isinstance(history, list) and len(history) > 1:
+            # Step 0 from history[1] (do not include history[0] in display)
             step_zero_text = ""
-            step_zero_content = step.get("content")
+            step_zero_content = history[1].get("content") if isinstance(history[1], dict) else None
             if isinstance(step_zero_content, list) and len(step_zero_content) > 0:
                 first_item = step_zero_content[0]
                 if isinstance(first_item, dict):
                     step_zero_text = first_item.get("text", "")
-            
+            elif isinstance(step_zero_content, str):
+                step_zero_text = step_zero_content
+
             sanitized_trajectory.append({
                 "step": 0,
                 "content": step_zero_text
             })
-        else:
-            sanitized_trajectory.append({
-                "step": step.get("originalIndex"),
-                "thought": step.get("thought"),
-                "action": step.get("action"),
-                "observation": step.get("observation")
-            })
+
+            # Subsequent steps are pairs: assistant at even i and tool at i+1
+            # history[2] & history[3] => step 1, history[4] & history[5] => step 2, ...
+            # Start at i=2 and advance by 2
+            i = 2
+            step_number = 1
+            while i + 1 < len(history):
+                assistant = history[i] if isinstance(history[i], dict) else {}
+                tool_msg = history[i + 1] if isinstance(history[i + 1], dict) else {}
+
+                thought = assistant.get('thought', '')
+                action = assistant.get('action', '')
+                observation_full = tool_msg.get('content', '')
+                observation = observation_full
+                try:
+                    # Extract after the delimiter if present
+                    if isinstance(observation_full, str) and 'OBSERVATION:\n' in observation_full:
+                        observation = observation_full.split('OBSERVATION:\n', 1)[1]
+                except Exception:
+                    pass
+
+                sanitized_trajectory.append({
+                    "step": step_number,
+                    "thought": thought,
+                    "action": action,
+                    "observation": observation,
+                })
+
+                i += 2
+                step_number += 1
+    except Exception as e:
+        logging.error(f"Failed to build sanitized trajectory from history: {e}")
+        return jsonify({"error": "Invalid history format"}), 400
 
     # Format the trajectory for the prompt
     formatted_trajectory = json.dumps(sanitized_trajectory, indent=2)
@@ -131,7 +160,6 @@ def chat():
             messages=full_messages,
             tools=tools,
             tool_choice="auto",
-            # temperature=0.0
         )
         return jsonify(response.choices[0].message.to_dict())
     except Exception as e:
@@ -154,39 +182,44 @@ def replace():
         return jsonify({"error": "Missing required fields"}), 400
 
     try:
-        # Normalize pattern so that actual newline characters in the incoming JSON
-        # match the literal "\\n" sequences present in the JSON file string values.
-        normalized_pattern = search_term.replace('\r\n', r'\\r\\n').replace('\n', r'\\n').replace('\r', r'\\r')
-        logging.info(f"Normalized regex pattern: {repr(normalized_pattern)}")
+        # Parse JSON and perform replacements only within the history object
+        doc = json.loads(content)
+        history = doc.get('history')
+        if not isinstance(history, list):
+            return jsonify({"error": "No history array found in JSON"}), 400
 
-        # Compile regex with DOTALL so "." matches across encoded segments if needed
+        # Interpret common escaped newline sequences in the pattern to match actual text
+        # so users can search for "\\n" and match real newlines.
+        normalized_pattern = (
+            search_term
+            .replace('\\r\\n', '\r\n')
+            .replace('\\n', '\n')
+            .replace('\\r', '\r')
+        )
+        logging.info(f"Normalized regex pattern -> actual text: {repr(normalized_pattern)}")
+
         pattern = re.compile(normalized_pattern, re.DOTALL)
 
-        # Count regex matches before replacement
-        occurrences_before = len(pattern.findall(content))
-        logging.info(f"Regex matches before: {occurrences_before}")
-        
-        if occurrences_before == 0:
-            return jsonify({"error": "Search term pattern did not match the content"}), 400
+        replacements = 0
 
-        # Perform a global regex replacement using a function to preserve literal backslashes
-        def _repl(_match):
-            return replace_term
-        modified_content, replacements = pattern.subn(_repl, content)
+        def replace_in_value(value):
+            nonlocal replacements
+            if isinstance(value, str):
+                new_value, count = pattern.subn(replace_term, value)
+                replacements += count
+                return new_value
+            if isinstance(value, list):
+                return [replace_in_value(v) for v in value]
+            if isinstance(value, dict):
+                return {k: replace_in_value(v) for k, v in value.items()}
+            return value
 
-        logging.info(f"Replacements applied: {replacements}")
+        new_history = replace_in_value(history)
 
-        if replacements == 0 or modified_content == content:
-            logging.warning("Replace operation returned identical content - no changes made")
-            return jsonify({"error": "Replace operation did not modify the content. This might indicate an issue with the search pattern or content format."}), 400
+        if replacements == 0:
+            return jsonify({"error": "Search term pattern did not match any history fields"}), 400
 
-        # Validate JSON before returning to avoid frontend parse errors
-        try:
-            json.loads(modified_content)
-        except Exception as je:
-            logging.error(f"Modified content is not valid JSON: {je}")
-            return jsonify({"error": f"Modified content is not valid JSON: {je}"}), 400
-
+        modified_content = json.dumps({"history": new_history}, indent=2)
         return jsonify({"modified_content": modified_content})
     except re.error as rex:
         logging.error(f"Regex error during replacement: {rex}")
@@ -199,7 +232,7 @@ def replace():
 def replace_thought():
     data = request.json
     content = data.get('content')
-    original_index = data.get('original_index')  # 1-based index in trajectory
+    original_index = data.get('original_index')  # 1-based step index (step j)
     old_thought = data.get('old_thought', '')
     new_thought = data.get('new_thought', '')
 
@@ -212,68 +245,32 @@ def replace_thought():
         return jsonify({"error": f"Input content is not valid JSON: {e}"}), 400
 
     try:
-        traj = doc.get('trajectory')
-        if not isinstance(traj, list):
-            return jsonify({"error": "No trajectory array found in JSON"}), 400
+        history = doc.get('history')
+        if not isinstance(history, list):
+            return jsonify({"error": "No history array found in JSON"}), 400
 
-        idx0 = int(original_index) - 1
-        if idx0 < 0 or idx0 >= len(traj):
-            return jsonify({"error": f"original_index {original_index} is out of range"}), 400
+        step_j = int(original_index)
+        if step_j <= 0:
+            return jsonify({"error": "original_index must refer to a step >= 1 (step 0 is user instructions)"}), 400
 
-        step = traj[idx0]
-        if not isinstance(step, dict):
-            return jsonify({"error": f"Step at index {original_index} is not an object"}), 400
+        assistant_idx = 2 * step_j
+        tool_idx = assistant_idx + 1
+        if assistant_idx < 0 or tool_idx >= len(history):
+            return jsonify({"error": f"original_index {original_index} is out of range for history pairs"}), 400
 
-        current_thought = step.get('thought', '')
-        # Optional validation: if old_thought provided, ensure it matches
-        if old_thought and current_thought != old_thought:
-            # Try to normalize Windows newlines to Unix for comparison
-            if current_thought.replace('\r\n', '\n') != old_thought.replace('\r\n', '\n'):
-                return jsonify({"error": "Current thought does not match the provided old_thought. Edit may be outdated."}), 409
+        assistant_msg = history[assistant_idx]
+        if not isinstance(assistant_msg, dict):
+            return jsonify({"error": f"history[{assistant_idx}] is not an object"}), 400
 
-        # Update the edited step's thought
-        step['thought'] = new_thought
+        current_thought = assistant_msg.get('thought', '')
+        if old_thought and current_thought.replace('\r\n', '\n') != str(old_thought).replace('\r\n', '\n'):
+            return jsonify({"error": "Current thought does not match the provided old_thought. Edit may be outdated."}), 409
 
-        # Also update the edited step's response if present/desired
-        try:
-            step['response'] = new_thought
-        except Exception:
-            # Be defensive: if step is not a dict or assignment fails, ignore
-            pass
+        # Update assistant message's thought and content
+        assistant_msg['thought'] = new_thought
+        assistant_msg['content'] = new_thought
 
-        # Compute derived message index using zero-based i (idx0)
-        # Required index: 2*i + 2 where i is zero-based step index
-        derived_message_index = 2 * idx0 + 2
-
-        # For all subsequent steps j > i, update query[2*i+2].thought/content if present
-        try:
-            for subsequent_index in range(idx0 + 1, len(traj)):
-                subsequent_step = traj[subsequent_index]
-                if not isinstance(subsequent_step, dict):
-                    continue
-                query_array = subsequent_step.get('query')
-                if isinstance(query_array, list) and 0 <= derived_message_index < len(query_array):
-                    target_entry = query_array[derived_message_index]
-                    if isinstance(target_entry, dict):
-                        # Update both fields when available
-                        target_entry['thought'] = new_thought
-                        target_entry['content'] = new_thought
-        except Exception as _:
-            # Be resilient to schema variations
-            pass
-
-        # Also update the global history[2*i+2].thought/content if present
-        try:
-            history_array = doc.get('history')
-            if isinstance(history_array, list) and 0 <= derived_message_index < len(history_array):
-                history_entry = history_array[derived_message_index]
-                if isinstance(history_entry, dict):
-                    history_entry['thought'] = new_thought
-                    history_entry['content'] = new_thought
-        except Exception as _:
-            pass
-
-        modified_content = json.dumps(doc, indent=2)
+        modified_content = json.dumps({"history": history}, indent=2)
         return jsonify({"modified_content": modified_content})
     except Exception as e:
         logging.error(f"Error in replace_thought: {e}")
@@ -365,7 +362,7 @@ Previous steps context:
 def remove_step():
     data = request.json
     content = data.get('content')
-    original_index = data.get('original_index')  # 1-based index in trajectory
+    original_index = data.get('original_index')  # 1-based step index (step j)
 
     if content is None or original_index is None:
         return jsonify({"error": "Missing required fields: content, original_index"}), 400
@@ -376,53 +373,24 @@ def remove_step():
         return jsonify({"error": f"Input content is not valid JSON: {e}"}), 400
 
     try:
-        traj = doc.get('trajectory')
-        if not isinstance(traj, list):
-            return jsonify({"error": "No trajectory array found in JSON"}), 400
+        history = doc.get('history')
+        if not isinstance(history, list):
+            return jsonify({"error": "No history array found in JSON"}), 400
 
-        idx0 = int(original_index) - 1
-        if idx0 < 0 or idx0 >= len(traj):
-            return jsonify({"error": f"original_index {original_index} is out of range"}), 400
+        step_j = int(original_index)
+        if step_j <= 0:
+            return jsonify({"error": "original_index must refer to a step >= 1 (cannot remove step 0)"}), 400
 
-        # Remove the trajectory step i
-        traj.pop(idx0)
+        assistant_idx = 2 * step_j
+        tool_idx = assistant_idx + 1
+        if assistant_idx < 0 or tool_idx >= len(history):
+            return jsonify({"error": f"original_index {original_index} is out of range for history pairs"}), 400
 
-        # Compute derived message indices based on zero-based i: 2*i+2 and 2*i+3
-        base_msg_idx = 2 * idx0 + 2
-        next_msg_idx = base_msg_idx + 1
+        # Remove tool first, then assistant to keep indices valid
+        history.pop(tool_idx)
+        history.pop(assistant_idx)
 
-        # For all subsequent steps j > i (after pop, these are indices >= idx0),
-        # remove query[2*i+2] and query[2*i+3] if present. Remove higher index first.
-        for subsequent_index in range(idx0, len(traj)):
-            step_j = traj[subsequent_index]
-            if not isinstance(step_j, dict):
-                continue
-            query_array = step_j.get('query')
-            if isinstance(query_array, list):
-                # Remove index next_msg_idx first, then base_msg_idx, guarding bounds each time
-                if 0 <= next_msg_idx < len(query_array):
-                    query_array.pop(next_msg_idx)
-                if 0 <= base_msg_idx < len(query_array):
-                    query_array.pop(base_msg_idx)
-
-        # Remove from global history: indices 2*i+2 and 2*i+3 (remove higher first)
-        history_array = doc.get('history')
-        if isinstance(history_array, list):
-            if 0 <= next_msg_idx < len(history_array):
-                history_array.pop(next_msg_idx)
-            if 0 <= base_msg_idx < len(history_array):
-                history_array.pop(base_msg_idx)
-
-        # Decrease info.model_stats.api_calls by 1 if present
-        info_obj = doc.get('info')
-        if isinstance(info_obj, dict):
-            model_stats = info_obj.get('model_stats')
-            if isinstance(model_stats, dict):
-                api_calls = model_stats.get('api_calls')
-                if isinstance(api_calls, int):
-                    model_stats['api_calls'] = max(0, api_calls - 1)
-
-        modified_content = json.dumps(doc, indent=2)
+        modified_content = json.dumps({"history": history}, indent=2)
         return jsonify({"modified_content": modified_content})
     except Exception as e:
         logging.error(f"Error in remove_step: {e}")
