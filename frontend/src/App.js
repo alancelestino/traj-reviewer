@@ -22,12 +22,13 @@ function App() {
 
   const getStepText = (value, isStepZero = false) => {
     if (!value) return '';
-    if (isStepZero) {
-        if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object' && value[0] !== null && 'text' in value[0]) {
-            return value[0].text;
-        }
+    // Handle array format: [{"type": "text", "text": "..."}]
+    if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object' && value[0] !== null && 'text' in value[0]) {
+        return value[0].text;
     }
+    // Handle object format: {"text": "..."}
     if (typeof value === 'object' && value.text) return value.text;
+    // Handle string format: "..."
     if (typeof value === 'string') return value;
     return '';
   };

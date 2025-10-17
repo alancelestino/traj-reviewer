@@ -15,6 +15,24 @@ CORS(app)
 
 client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+def extract_content_text(content):
+    """
+    Extract text from content field which can be either:
+    - A string: "some text"
+    - A list of objects: [{"type": "text", "text": "some text"}]
+    
+    Returns the text as a string, or empty string if content is None/invalid.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list) and len(content) > 0:
+        first_item = content[0]
+        if isinstance(first_item, dict):
+            return first_item.get("text", "")
+    return ""
+
 SYSTEM_PROMPT = """
 # 🔎 Identity,  Goals, and Setting
 
@@ -100,14 +118,8 @@ def chat():
     try:
         if isinstance(history, list) and len(history) > 1:
             # Step 0 from history[1] (do not include history[0] in display)
-            step_zero_text = ""
             step_zero_content = history[1].get("content") if isinstance(history[1], dict) else None
-            if isinstance(step_zero_content, list) and len(step_zero_content) > 0:
-                first_item = step_zero_content[0]
-                if isinstance(first_item, dict):
-                    step_zero_text = first_item.get("text", "")
-            elif isinstance(step_zero_content, str):
-                step_zero_text = step_zero_content
+            step_zero_text = extract_content_text(step_zero_content)
 
             sanitized_trajectory.append({
                 "step": 0,
@@ -125,11 +137,11 @@ def chat():
 
                 thought = assistant.get('thought', '')
                 action = assistant.get('action', '')
-                observation_full = tool_msg.get('content', '')
+                observation_full = extract_content_text(tool_msg.get('content'))
                 observation = observation_full
                 try:
                     # Extract after the delimiter if present
-                    if isinstance(observation_full, str) and 'OBSERVATION:\n' in observation_full:
+                    if 'OBSERVATION:\n' in observation_full:
                         observation = observation_full.split('OBSERVATION:\n', 1)[1]
                 except Exception:
                     pass
@@ -329,12 +341,8 @@ Previous steps context:
     # Add previous steps context
     for i, step in enumerate(previous_steps):
         if step.get('isStepZero'):
-            step_text = ""
             step_content = step.get("content")
-            if isinstance(step_content, list) and len(step_content) > 0:
-                first_item = step_content[0]
-                if isinstance(first_item, dict):
-                    step_text = first_item.get("text", "")
+            step_text = extract_content_text(step_content)
             prompt += f"\nStep 0: {step_text}\n"
         else:
             thought = step.get('thought', '')
