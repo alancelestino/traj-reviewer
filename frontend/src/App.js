@@ -2,11 +2,44 @@ import React, { useState, useEffect } from 'react';
 import './App.css';
 import Chat from './Chat';
 
+const COMMAND_COLOR_PALETTE = [
+  '#2ecc71', '#3498db', '#9b59b6', '#f39c12', '#e74c3c',
+  '#1abc9c', '#34495e', '#27ae60', '#e84393', '#8e44ad'
+];
+
+const TOP_BASH_COMMANDS = [
+  'ls', 'cd', 'pwd', 'cat', 'echo', 'touch', 'mkdir', 'rm', 'rmdir', 'cp',
+  'mv', 'find', 'grep', 'sed', 'awk', 'head', 'tail', 'less', 'more', 'sort',
+  'uniq', 'cut', 'paste', 'tar', 'gzip', 'gunzip', 'zip', 'unzip', 'ssh', 'scp',
+  'curl', 'wget', 'ping', 'traceroute', 'dig', 'host', 'nslookup', 'ifconfig', 'ip', 'netstat',
+  'route', 'docker', 'docker-compose', 'kubectl', 'systemctl', 'service', 'ps', 'top', 'htop', 'kill',
+  'pkill', 'killall', 'df', 'du', 'free', 'mount', 'umount', 'chmod', 'chown', 'chgrp',
+  'ln', 'basename', 'dirname', 'tee', 'xargs', 'env', 'export', 'alias', 'unalias', 'history',
+  'clear', 'sleep', 'time', 'yes', 'sudo', 'make', 'cmake', 'git', 'npm', 'yarn',
+  'pnpm', 'node', 'npx', 'python', 'python3', 'pip', 'pip3', 'bundle', 'rails', 'rake',
+  'go', 'cargo', 'rustc', 'java', 'javac', 'gradle', 'mvn', 'perl', 'php', 'composer'
+];
+
+const COMMAND_TAG_COLOR_MAP = TOP_BASH_COMMANDS.reduce((acc, command, index) => {
+  acc[command] = COMMAND_COLOR_PALETTE[index % COMMAND_COLOR_PALETTE.length];
+  return acc;
+}, {
+  bash: '#34495e',
+  'str_replace_editor': '#ff6b6b',
+  'str_replace_editor:create': '#ff922b',
+  'str_replace_editor:view': '#ffa94d',
+  'str_replace_editor:edit': '#f06595',
+  'str_replace_editor:apply': '#e8590c',
+  'str_replace_editor:preview': '#74c0fc'
+});
+
+const COMMAND_COLOR_DEFAULT = '#95a5a6';
+
 function App() {
   const [trajectory, setTrajectory] = useState([]);
   const [history, setHistory] = useState([]);
   const [filteredTrajectory, setFilteredTrajectory] = useState([]);
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const [expandedSteps, setExpandedSteps] = useState([]);
   const [fileName, setFileName] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [semanticFilter, setSemanticFilter] = useState(null);
@@ -94,49 +127,12 @@ function App() {
     }
 
     setFilteredTrajectory(newFiltered);
-    
-    // Only reset to first step if we don't have a current step or if current step is not in filtered results
-    if (currentIndex >= newFiltered.length || newFiltered.length === 0) {
-      setCurrentIndex(0);
-    } else {
-      // Try to keep the same step if it's still available in filtered results
-      const currentStep = filteredTrajectory[currentIndex];
-      if (currentStep) {
-        const newIndex = newFiltered.findIndex(step => step.originalIndex === currentStep.originalIndex);
-        if (newIndex !== -1) {
-          setCurrentIndex(newIndex);
-        } else {
-          setCurrentIndex(0);
-        }
-      } else {
-        setCurrentIndex(0);
-      }
-    }
-  }, [searchQuery, trajectory, semanticFilter, currentIndex, filteredTrajectory]);
 
-  // Separate effect to handle position restoration when filters are cleared
-  useEffect(() => {
-    // Only run when filters are completely cleared
-    if (!searchQuery.trim() && !semanticFilter) {
-      console.log('Filters cleared - staying at current filtered position');
-      
-      // Find the current filtered step in the unfiltered trajectory
-      if (filteredTrajectory.length > 0 && currentIndex < filteredTrajectory.length) {
-        const currentFilteredStep = filteredTrajectory[currentIndex];
-        if (currentFilteredStep) {
-          // Find this step in the unfiltered trajectory
-          const unfilteredIndex = trajectory.findIndex(step => step.originalIndex === currentFilteredStep.originalIndex);
-          if (unfilteredIndex !== -1) {
-            console.log('Staying at step with original index:', currentFilteredStep.originalIndex);
-            // Keep the same currentIndex since we're staying on the same step
-          } else {
-            console.log('Current filtered step not found in unfiltered trajectory, resetting to 0');
-            setCurrentIndex(0);
-          }
-        }
-      }
-    }
-  }, [filteredTrajectory, searchQuery, semanticFilter, trajectory, currentIndex]);
+    const visibleIndices = new Set(newFiltered.map(step => step.originalIndex));
+    setExpandedSteps(prevExpanded =>
+      prevExpanded.filter(index => visibleIndices.has(index))
+    );
+  }, [searchQuery, trajectory, semanticFilter]);
 
   const loadTrajectory = (contentString, clearModifiedContent = true) => {
     console.log('loadTrajectory called, clearModifiedContent:', clearModifiedContent);
@@ -187,6 +183,10 @@ function App() {
       }
 
       setTrajectory(processedTrajectory);
+      const defaultExpanded = processedTrajectory
+        .filter(step => step.isStepZero)
+        .map(step => step.originalIndex);
+      setExpandedSteps(defaultExpanded);
       // Reset all filters and the chat component
       handleClearFilters();
       setChatKey(key => key + 1);
@@ -322,9 +322,17 @@ function App() {
     }
   };
 
-  const handleEditThought = (stepIndex) => {
-    const step = filteredTrajectory[stepIndex];
-    setEditingStep(step.originalIndex);
+  const ensureExpanded = (originalIndex) => {
+    setExpandedSteps(prev => (prev.includes(originalIndex) ? prev : [...prev, originalIndex]));
+  };
+
+  const handleEditThought = (originalIndex) => {
+    const step = filteredTrajectory.find(item => item.originalIndex === originalIndex);
+    if (!step || step.isStepZero) {
+      return;
+    }
+    ensureExpanded(originalIndex);
+    setEditingStep(originalIndex);
     setEditedThought(getStepText(step.thought));
   };
 
@@ -399,9 +407,14 @@ function App() {
     setEditedThought('');
   };
 
-  const handleGenerateThought = async (stepIndex) => {
-    const currentStep = filteredTrajectory[stepIndex];
-    setGeneratingThought(currentStep.originalIndex);
+  const handleGenerateThought = async (originalIndex) => {
+    const currentStep = filteredTrajectory.find(step => step.originalIndex === originalIndex);
+    if (!currentStep || currentStep.isStepZero) {
+      return;
+    }
+
+    ensureExpanded(originalIndex);
+    setGeneratingThought(originalIndex);
 
     try {
       console.log('handleGenerateThought called');
@@ -477,8 +490,8 @@ function App() {
     }
   };
 
-  const handleRemoveStep = async (stepIndex) => {
-    const step = filteredTrajectory[stepIndex];
+  const handleRemoveStep = async (originalIndex) => {
+    const step = filteredTrajectory.find(item => item.originalIndex === originalIndex);
     if (!step) return;
     if (step.isStepZero || step.originalIndex === 0) {
       alert('Cannot remove Step 0.');
@@ -511,9 +524,7 @@ function App() {
       setModifiedContent(data.modified_content);
       loadTrajectory(data.modified_content, false);
       setHasUnsavedChanges(true);
-
-      // Move selection to previous item if possible
-      setCurrentIndex((prev) => (prev > 0 ? prev - 1 : 0));
+      setExpandedSteps(prev => prev.filter(index => index !== originalIndex));
 
       alert(`Removed step ${step.originalIndex} successfully.`);
     } catch (error) {
@@ -528,37 +539,374 @@ function App() {
     // The useEffect will handle position restoration automatically
   };
 
-  const goToPrevious = () => {
-    setCurrentIndex((prevIndex) => (prevIndex > 0 ? prevIndex - 1 : 0));
-  };
-
-  const goToNext = () => {
-    setCurrentIndex((prevIndex) =>
-      prevIndex < filteredTrajectory.length - 1 ? prevIndex + 1 : prevIndex
-    );
-  };
-
   const handleSemanticFilter = (filteredSteps) => {
     setSemanticFilter(filteredSteps);
   };
 
-  const highlightMatches = (text, isStepZero = false) => {
-    const stringText = getStepText(text, isStepZero);
+  const toPlainText = (value, isStepZero = false) => getStepText(value, isStepZero) || '';
 
+  const highlightText = (stringText) => {
+    if (typeof stringText !== 'string' || stringText.length === 0) {
+      return stringText;
+    }
     const searchTerms = searchQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
     if (searchTerms.length === 0) {
       return stringText;
     }
-    const regex = new RegExp(`(${searchTerms.join('|')})`, 'gi');
+    const escapedTerms = searchTerms.map(term => escapeRegExp(term));
+    const regex = new RegExp(`(${escapedTerms.join('|')})`, 'gi');
     return stringText.split(regex).map((part, index) => {
-        if (searchTerms.some(term => part.toLowerCase() === term)) {
-            return <mark key={index}>{part}</mark>;
-        }
-        return part;
+      if (searchTerms.includes(part.toLowerCase())) {
+        return <mark key={`highlight-${index}`}>{part}</mark>;
+      }
+      return part;
     });
   };
 
-  const currentStep = filteredTrajectory[currentIndex];
+  const createHighlightedFragment = (text, key) => {
+    if (!text) {
+      return null;
+    }
+    return <React.Fragment key={key}>{highlightText(text)}</React.Fragment>;
+  };
+
+  const renderSummaryText = (value, { isStepZero = false, firstLineOnly = false } = {}) => {
+    const raw = toPlainText(value, isStepZero).trim();
+    if (!raw) {
+      return <span className="empty-text">—</span>;
+    }
+    let display = raw;
+    if (firstLineOnly) {
+      const lines = raw.split(/\r?\n/);
+      const nonEmpty = lines.find(line => line.trim().length > 0);
+      display = (nonEmpty !== undefined ? nonEmpty : lines[0] || raw).trim();
+    }
+    if (display.length > 180) {
+      display = `${display.slice(0, 180).trimEnd()}…`;
+    }
+    return highlightText(display);
+  };
+
+  const extractCodeFence = (text) => {
+    const trimmed = text.trim();
+    const fenceMatch = trimmed.match(/^```(\w+)?\s*\n([\s\S]*?)\n?```$/);
+    if (!fenceMatch) {
+      return null;
+    }
+    return {
+      language: fenceMatch[1] ? fenceMatch[1].toLowerCase() : null,
+      code: fenceMatch[2],
+    };
+  };
+
+  const parseJsonSafely = (text) => {
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed === 'object' && parsed !== null) {
+        return parsed;
+      }
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  };
+
+  const shouldTreatAsCode = (text, languageHint) => {
+    if (!text) {
+      return false;
+    }
+    if (languageHint) {
+      return true;
+    }
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return false;
+    }
+    if (parseJsonSafely(trimmed)) {
+      return true;
+    }
+    if (trimmed.includes('\n')) {
+      if (/\b(const|let|var|function|return|if|else|for|while|class|import|def|lambda|async|await|try|except|catch|SELECT|INSERT|UPDATE|DELETE|BEGIN|END)\b/i.test(trimmed)) {
+        return true;
+      }
+      if (/[{;}]/.test(trimmed)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const syntaxHighlightJson = (jsonString) => {
+    const tokenRegex = /("(?:\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(?:\s*:)?|\btrue\b|\bfalse\b|\bnull\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g;
+    const nodes = [];
+    let lastIndex = 0;
+    let tokenId = 0;
+
+    jsonString.replace(tokenRegex, (match, _group, offset) => {
+      if (offset > lastIndex) {
+        const plainSegment = jsonString.slice(lastIndex, offset);
+        const fragment = createHighlightedFragment(plainSegment, `json-plain-${tokenId++}`);
+        if (fragment) {
+          nodes.push(fragment);
+        }
+      }
+
+      let className = 'number';
+      if (match.startsWith('"')) {
+        className = match.endsWith(':') ? 'key' : 'string';
+      } else if (/true|false/i.test(match)) {
+        className = 'boolean';
+      } else if (/null/i.test(match)) {
+        className = 'null';
+      }
+
+      nodes.push(
+        <span className={`code-token ${className}`} key={`json-token-${tokenId++}`}>
+          {highlightText(match)}
+        </span>
+      );
+
+      lastIndex = offset + match.length;
+      return match;
+    });
+
+    if (lastIndex < jsonString.length) {
+      const trailing = jsonString.slice(lastIndex);
+      const fragment = createHighlightedFragment(trailing, `json-tail-${lastIndex}`);
+      if (fragment) {
+        nodes.push(fragment);
+      }
+    }
+
+    if (nodes.length === 0) {
+      return [createHighlightedFragment(jsonString, 'json-fallback')];
+    }
+
+    return nodes;
+  };
+
+  const syntaxHighlightGeneric = (codeString) => {
+    const keywords = [
+      'const', 'let', 'var', 'function', 'return', 'if', 'else', 'for', 'while', 'break', 'continue',
+      'class', 'extends', 'import', 'from', 'export', 'async', 'await', 'try', 'catch', 'finally',
+      'def', 'lambda', 'yield', 'with', 'pass', 'raise', 'True', 'False', 'None'
+    ];
+    const keywordPattern = keywords.join('|');
+    const tokenRegex = new RegExp(`(\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|\\\`(?:\\\\.|[^\\\`])*\\\`|\\b(?:${keywordPattern})\\b|\\b\\d+(?:\\.\\d+)?\\b)`, 'g');
+    const nodes = [];
+    let lastIndex = 0;
+    let tokenId = 0;
+
+    codeString.replace(tokenRegex, (match, _group, offset) => {
+      if (offset > lastIndex) {
+        const plainSegment = codeString.slice(lastIndex, offset);
+        const fragment = createHighlightedFragment(plainSegment, `code-plain-${tokenId++}`);
+        if (fragment) {
+          nodes.push(fragment);
+        }
+      }
+
+      let className = 'keyword';
+      if (/^["'`]/.test(match)) {
+        className = 'string';
+      } else if (/^\d/.test(match)) {
+        className = 'number';
+      }
+
+      nodes.push(
+        <span className={`code-token ${className}`} key={`code-token-${tokenId++}`}>
+          {highlightText(match)}
+        </span>
+      );
+
+      lastIndex = offset + match.length;
+      return match;
+    });
+
+    if (lastIndex < codeString.length) {
+      const trailing = codeString.slice(lastIndex);
+      const fragment = createHighlightedFragment(trailing, `code-tail-${lastIndex}`);
+      if (fragment) {
+        nodes.push(fragment);
+      }
+    }
+
+    if (nodes.length === 0) {
+      return [createHighlightedFragment(codeString, 'code-fallback')];
+    }
+
+    return nodes;
+  };
+
+  const renderCodeBlock = (codeBody, languageHint = null) => {
+    const normalized = codeBody.replace(/\r\n/g, '\n').replace(/\s+$/, '');
+    const trimmed = normalized.trim();
+    const jsonValue = parseJsonSafely(trimmed);
+
+    let languageClass = languageHint;
+    let contentNodes;
+
+    if (jsonValue) {
+      const pretty = JSON.stringify(jsonValue, null, 2);
+      contentNodes = syntaxHighlightJson(pretty);
+      languageClass = languageClass || 'json';
+    } else {
+      contentNodes = syntaxHighlightGeneric(normalized);
+    }
+
+    return (
+      <pre className={`code-block ${languageClass ? `code-${languageClass}` : ''}`}>
+        <code>{contentNodes}</code>
+      </pre>
+    );
+  };
+
+  const renderDetailContent = (value, { isStepZero = false, allowCodeFormat = true } = {}) => {
+    const raw = toPlainText(value, isStepZero);
+    if (!raw || raw.trim().length === 0) {
+      return <span className="empty-text">—</span>;
+    }
+
+    const fence = extractCodeFence(raw);
+    const codeBody = fence ? fence.code : raw;
+    const languageHint = fence ? fence.language : null;
+
+    if (allowCodeFormat && shouldTreatAsCode(codeBody, languageHint)) {
+      return renderCodeBlock(codeBody, languageHint);
+    }
+
+    return <p>{highlightText(raw)}</p>;
+  };
+
+  const splitCommandSegments = (commandText) => {
+    return commandText
+      .split(/&&|\|\||;|\n|\r|\u2028|\u2029/)
+      .flatMap(segment => segment.split('|'))
+      .map(segment => segment.trim())
+      .filter(Boolean);
+  };
+
+  const extractPrimaryLine = (text) => {
+    if (!text) {
+      return '';
+    }
+    const [firstLine] = text.split(/\r?\n/);
+    return firstLine ? firstLine.trim() : '';
+  };
+
+  const normalizeCommandToken = (segment, collector) => {
+    if (!segment) return;
+    const loweredSegment = segment.toLowerCase();
+
+    if (loweredSegment.includes('str_replace_editor')) {
+      const modeCandidates = [
+        loweredSegment.match(/str_replace_editor\s*(?::|=)\s*([a-z0-9_-]+)/),
+        loweredSegment.match(/str_replace_editor\s+([a-z0-9_-]+)/),
+        loweredSegment.match(/["']action["']\s*[:=]\s*["']([a-z0-9_-]+)["']/),
+        loweredSegment.match(/['"]mode['"]\s*[:=]\s*['"]([a-z0-9_-]+)['"]/),
+        loweredSegment.match(/["']operation["']\s*[:=]\s*["']([a-z0-9_-]+)["']/)
+      ];
+
+      const modeMatch = modeCandidates.find(Boolean);
+      const mode = modeMatch ? modeMatch[1] : null;
+      collector.add(mode ? `str_replace_editor:${mode}` : 'str_replace_editor');
+      return;
+    }
+
+    const tokens = segment.split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return;
+
+    // Remove leading environment variable assignments
+    while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) {
+      tokens.shift();
+    }
+
+    if (tokens.length === 0) return;
+
+    let primary = tokens[0].replace(/^[^A-Za-z0-9._-]+/, '').toLowerCase();
+    if (!primary) return;
+
+    if (primary === 'sudo' && tokens.length > 1) {
+      collector.add('sudo');
+      primary = tokens[1].replace(/^[^A-Za-z0-9._-]+/, '').toLowerCase();
+    }
+
+    if (primary) {
+      collector.add(primary);
+    }
+  };
+
+  const getTagColor = (tag) => {
+    if (COMMAND_TAG_COLOR_MAP[tag]) {
+      return COMMAND_TAG_COLOR_MAP[tag];
+    }
+    if (tag.startsWith('str_replace_editor:')) {
+      return COMMAND_TAG_COLOR_MAP['str_replace_editor'] || COMMAND_COLOR_DEFAULT;
+    }
+    return COMMAND_COLOR_DEFAULT;
+  };
+
+  const getActionTags = (step) => {
+    if (!step || step.isStepZero) {
+      return [];
+    }
+
+    const rawActionFull = toPlainText(step.action);
+    if (!rawActionFull) {
+      return [];
+    }
+
+    const rawAction = extractPrimaryLine(rawActionFull);
+
+    const tagCollector = new Set();
+    const textCandidates = new Set([rawAction]);
+
+    const keyValueQuotedRegex = /(command|cmd|commands|script|code|input|tool_input|toolInput|source|shell)\s*[:=]\s*["'`]{1}([^"'`]+)["'`]/gi;
+    let match;
+    while ((match = keyValueQuotedRegex.exec(rawAction)) !== null) {
+      textCandidates.add(match[2]);
+    }
+
+    const keyValueBareRegex = /(command|cmd|commands|script|code|input|tool_input|toolInput|source|shell)\s*[:=]\s*([^\s,]+)/gi;
+    while ((match = keyValueBareRegex.exec(rawAction)) !== null) {
+      textCandidates.add(match[2]);
+    }
+
+    textCandidates.forEach(text => {
+      splitCommandSegments(text).forEach(segment => {
+        normalizeCommandToken(segment, tagCollector);
+      });
+    });
+
+    return Array.from(tagCollector);
+  };
+
+  const isStepExpanded = (originalIndex) => expandedSteps.includes(originalIndex);
+
+  const toggleStepExpansion = (originalIndex) => {
+    setExpandedSteps(prev =>
+      prev.includes(originalIndex)
+        ? prev.filter(index => index !== originalIndex)
+        : [...prev, originalIndex]
+    );
+  };
+
+  const visibleIndices = filteredTrajectory.map(step => step.originalIndex);
+  const allExpanded = visibleIndices.length > 0 && visibleIndices.every(index => expandedSteps.includes(index));
+
+  const handleToggleAll = () => {
+    if (visibleIndices.length === 0) {
+      return;
+    }
+    if (allExpanded) {
+      setExpandedSteps([]);
+    } else {
+      setExpandedSteps(visibleIndices);
+    }
+  };
 
   return (
     <div className="App">
@@ -608,81 +956,166 @@ function App() {
               )}
           </div>
           <main className="App-main">
-            {filteredTrajectory.length > 0 && currentStep ? (
-              <div className="trajectory-step">
-                <div className="step-info">
-                  Step {currentStep.originalIndex} of {trajectory.length - 1}
-                  {(searchQuery.trim() || semanticFilter) &&
-                    <span className="filtered-count">
-                      {' '}(match {currentIndex + 1} of {filteredTrajectory.length})
-                    </span>
-                  }
-                </div>
-                <div className="navigation-buttons">
-                  <button onClick={goToPrevious} disabled={currentIndex === 0}>
-                    Previous
-                  </button>
-                  <button onClick={goToNext} disabled={currentIndex === filteredTrajectory.length - 1}>
-                    Next
-                  </button>
-                </div>
-                {currentStep.isStepZero ? (
-                  <div className="step-content">
-                    <div className="step-item step-zero">
-                      <h2>User Instructions (Step 0)</h2>
-                      <p>{highlightMatches(currentStep.content, true)}</p>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="step-content">
-                    {currentStep.reasoning && (
-                      <div className="step-item reasoning">
-                        <h2>Reasoning</h2>
-                        <p>{currentStep.reasoning}</p>
-                      </div>
+            {filteredTrajectory.length > 0 ? (
+              <>
+                <div className="trajectory-toolbar">
+                  <div className="trajectory-count">
+                    Showing {filteredTrajectory.length} of {trajectory.length} entries
+                    {(searchQuery.trim() || semanticFilter) && (
+                      <span className="filtered-count">
+                        {' '}· filtered view
+                      </span>
                     )}
-                    <div className="step-item">
-                      <div className="step-header">
-                        <h2>Thought</h2>
-                        {editingStep === currentStep.originalIndex ? (
-                          <div className="edit-buttons">
-                            <button onClick={handleSaveThought} className="save-edit-btn">Save</button>
-                            <button onClick={handleCancelEdit} className="cancel-edit-btn">Cancel</button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleToggleAll}
+                    className="toggle-all-button"
+                    disabled={filteredTrajectory.length === 0}
+                  >
+                    {allExpanded ? 'Collapse all' : 'Expand all'}
+                  </button>
+                </div>
+                <div className="trajectory-list">
+                  {filteredTrajectory.map((step, index) => {
+                    const expanded = isStepExpanded(step.originalIndex);
+                    const isEditing = editingStep === step.originalIndex;
+                    const actionTags = getActionTags(step);
+
+                    return (
+                      <div
+                        key={step.originalIndex}
+                        className={`trajectory-card ${expanded ? 'expanded' : 'collapsed'} ${step.isStepZero ? 'user-instructions-card' : ''}`}
+                      >
+                        <div className="card-header">
+                          <button
+                            type="button"
+                            className="toggle-step-button"
+                            onClick={() => toggleStepExpansion(step.originalIndex)}
+                          >
+                            {expanded ? 'Collapse' : 'Expand'}
+                          </button>
+                          <div className="card-header-text">
+                            <h2>
+                              {step.isStepZero ? 'User Instructions (Step 0)' : `Step ${step.originalIndex}`}
+                            </h2>
+                            {(searchQuery.trim() || semanticFilter) && (
+                              <span className="match-index">
+                                Match {index + 1} of {filteredTrajectory.length}
+                              </span>
+                            )}
                           </div>
-                        ) : (
-                          <div className="edit-buttons">
-                            <button onClick={() => handleEditThought(currentIndex)} className="edit-btn">Edit</button>
-                            <button onClick={() => handleGenerateThought(currentIndex)} className="generate-edit-btn" disabled={generatingThought === currentStep.originalIndex}>
-                              {generatingThought === currentStep.originalIndex ? 'Generating...' : 'Generate with AI'}
-                            </button>
-                            <button onClick={() => handleRemoveStep(currentIndex)} className="remove-edit-btn" disabled={currentStep.originalIndex === 0}>
-                              Remove
-                            </button>
+                        </div>
+                        {actionTags.length > 0 && (
+                          <div className="command-tags">
+                            {actionTags.map(tag => (
+                              <span
+                                key={`${step.originalIndex}-${tag}`}
+                                className="command-tag"
+                                style={{ backgroundColor: getTagColor(tag) }}
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <div className="card-summary">
+                          {step.isStepZero ? (
+                            !expanded && (
+                              <div className="summary-row instructions-summary">
+                                <span className="summary-label">Instructions:</span>
+                                <span className="summary-content instructions-snippet">
+                                  {renderSummaryText(step.content, { isStepZero: true, firstLineOnly: true })}
+                                </span>
+                              </div>
+                            )
+                          ) : (
+                            <>
+                              <div className="summary-row">
+                                <span className="summary-label">Thought:</span>
+                                <span className="summary-content">
+                                  {renderSummaryText(step.thought, { firstLineOnly: true })}
+                                </span>
+                              </div>
+                              <div className="summary-row">
+                                <span className="summary-label">Action:</span>
+                                <span className="summary-content">
+                                  {renderSummaryText(step.action, { firstLineOnly: true })}
+                                </span>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                        {expanded && (
+                          <div className="card-details">
+                            {step.isStepZero ? (
+                              <div className="detail-block">
+                                {renderDetailContent(step.content, { isStepZero: true, allowCodeFormat: false })}
+                              </div>
+                            ) : (
+                              <>
+                                {step.reasoning && (
+                                  <div className="detail-block reasoning">
+                                    <h3>Reasoning</h3>
+                                    <p>{step.reasoning}</p>
+                                  </div>
+                                )}
+                                <div className="detail-block">
+                                  <div className="detail-header">
+                                    <h3>Thought</h3>
+                                    {isEditing ? (
+                                      <div className="detail-actions">
+                                        <button onClick={handleSaveThought} className="save-edit-btn">Save</button>
+                                        <button onClick={handleCancelEdit} className="cancel-edit-btn">Cancel</button>
+                                      </div>
+                                    ) : (
+                                      <div className="detail-actions">
+                                        <button onClick={() => handleEditThought(step.originalIndex)} className="edit-btn">Edit</button>
+                                        <button
+                                          onClick={() => handleGenerateThought(step.originalIndex)}
+                                          className="generate-edit-btn"
+                                          disabled={generatingThought === step.originalIndex}
+                                        >
+                                          {generatingThought === step.originalIndex ? 'Generating...' : 'Generate with AI'}
+                                        </button>
+                                        <button
+                                          onClick={() => handleRemoveStep(step.originalIndex)}
+                                          className="remove-edit-btn"
+                                          disabled={step.originalIndex === 0}
+                                        >
+                                          Remove
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                  {isEditing ? (
+                                    <textarea
+                                      value={editedThought}
+                                      onChange={(e) => setEditedThought(e.target.value)}
+                                      className="thought-editor"
+                                      rows={6}
+                                    />
+                                  ) : (
+                                    renderDetailContent(step.thought, { allowCodeFormat: false })
+                                  )}
+                                </div>
+                                <div className="detail-block">
+                                  <h3>Action</h3>
+                                  {renderDetailContent(step.action)}
+                                </div>
+                                <div className="detail-block">
+                                  <h3>Observation</h3>
+                                  {renderDetailContent(step.observation)}
+                                </div>
+                              </>
+                            )}
                           </div>
                         )}
                       </div>
-                      {editingStep === currentStep.originalIndex ? (
-                        <textarea
-                          value={editedThought}
-                          onChange={(e) => setEditedThought(e.target.value)}
-                          className="thought-editor"
-                          rows={6}
-                        />
-                      ) : (
-                        <p>{highlightMatches(currentStep.thought)}</p>
-                      )}
-                    </div>
-                    <div className="step-item">
-                      <h2>Action</h2>
-                      <p>{highlightMatches(currentStep.action)}</p>
-                    </div>
-                    <div className="step-item">
-                      <h2>Observation</h2>
-                      <p>{highlightMatches(currentStep.observation)}</p>
-                    </div>
-                  </div>
-                )}
-              </div>
+                    );
+                  })}
+                </div>
+              </>
             ) : (
               <div className="no-data-message">
                 <p>
