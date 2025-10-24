@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import './App.css';
 import Chat from './Chat';
 
@@ -35,6 +35,23 @@ const COMMAND_TAG_COLOR_MAP = TOP_BASH_COMMANDS.reduce((acc, command, index) => 
 
 const COMMAND_COLOR_DEFAULT = '#95a5a6';
 
+const STATUS_OPTION_STYLES = {
+  resolved: { backgroundColor: '#e6f4ea', color: '#1d6a2b' },
+  unresolved: { backgroundColor: '#fdecea', color: '#8a1c1c' },
+  unknown: { backgroundColor: '#eef2f7', color: '#54616d' },
+};
+
+const normalizeEscapedText = (input) => {
+  if (typeof input !== 'string') {
+    return '';
+  }
+  return input
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '    ')
+    .replace(/\r/g, '\n');
+};
+
 function App() {
   const [trajectory, setTrajectory] = useState([]);
   const [history, setHistory] = useState([]);
@@ -52,6 +69,281 @@ function App() {
   const [editedThought, setEditedThought] = useState('');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [generatingThought, setGeneratingThought] = useState(null);
+  const [deliverables, setDeliverables] = useState([]);
+  const [deliverablesLoading, setDeliverablesLoading] = useState(true);
+  const [deliverablesError, setDeliverablesError] = useState('');
+  const [selectedLanguage, setSelectedLanguage] = useState('');
+  const [selectedInstance, setSelectedInstance] = useState('');
+  const [selectedModel, setSelectedModel] = useState('');
+  const [selectedRun, setSelectedRun] = useState('');
+  const [selectedTrajectoryPath, setSelectedTrajectoryPath] = useState('');
+  const [selectedTrajectoryMeta, setSelectedTrajectoryMeta] = useState(null);
+  const [isLoadingDeliverable, setIsLoadingDeliverable] = useState(false);
+
+  const fetchDeliverablesIndex = useCallback(async () => {
+    try {
+      setDeliverablesLoading(true);
+      setDeliverablesError('');
+      const response = await fetch('http://localhost:5001/deliverables/index');
+      const data = await response.json();
+      if (!response.ok || data.error) {
+        const message = data?.error || `Failed to load deliverables (status ${response.status})`;
+        throw new Error(message);
+      }
+      const trajectories = Array.isArray(data.trajectories) ? data.trajectories : [];
+      setDeliverables(trajectories);
+    } catch (error) {
+      console.error('Failed to fetch deliverables index:', error);
+      setDeliverables([]);
+      setDeliverablesError(error.message || 'Failed to load deliverables index.');
+    } finally {
+      setDeliverablesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchDeliverablesIndex();
+  }, [fetchDeliverablesIndex]);
+
+  const uniqueSorted = useCallback((items) => {
+    return Array.from(new Set(items)).sort((a, b) => a.localeCompare(b));
+  }, []);
+
+  const handleRefreshDeliverables = useCallback(() => {
+    fetchDeliverablesIndex();
+  }, [fetchDeliverablesIndex]);
+
+  const { instanceStats, modelStats, runStats } = useMemo(() => {
+    const instanceMap = new Map();
+    const modelMap = new Map();
+    const runMap = new Map();
+    const seenRuns = new Set();
+
+    deliverables.forEach(item => {
+      const runKey = `${item.language}||${item.instance}||${item.model}||${item.run}`;
+      if (seenRuns.has(runKey)) {
+        return;
+      }
+      seenRuns.add(runKey);
+      const resolvedState = typeof item.resolved === 'boolean' ? item.resolved : null;
+
+      runMap.set(runKey, {
+        language: item.language,
+        instance: item.instance,
+        model: item.model,
+        run: item.run,
+        resolved: resolvedState,
+      });
+
+      const instanceKey = `${item.language}||${item.instance}`;
+      let instanceEntry = instanceMap.get(instanceKey);
+      if (!instanceEntry) {
+        instanceEntry = {
+          language: item.language,
+          instance: item.instance,
+          totalRuns: 0,
+          resolvedRuns: 0,
+          unresolvedRuns: 0,
+          unknownRuns: 0,
+        };
+        instanceMap.set(instanceKey, instanceEntry);
+      }
+      instanceEntry.totalRuns += 1;
+      if (resolvedState === true) {
+        instanceEntry.resolvedRuns += 1;
+      } else if (resolvedState === false) {
+        instanceEntry.unresolvedRuns += 1;
+      } else {
+        instanceEntry.unknownRuns += 1;
+      }
+
+      const modelKey = `${item.language}||${item.instance}||${item.model}`;
+      let modelEntry = modelMap.get(modelKey);
+      if (!modelEntry) {
+        modelEntry = {
+          language: item.language,
+          instance: item.instance,
+          model: item.model,
+          totalRuns: 0,
+          resolvedRuns: 0,
+          unresolvedRuns: 0,
+          unknownRuns: 0,
+        };
+        modelMap.set(modelKey, modelEntry);
+      }
+      modelEntry.totalRuns += 1;
+      if (resolvedState === true) {
+        modelEntry.resolvedRuns += 1;
+      } else if (resolvedState === false) {
+        modelEntry.unresolvedRuns += 1;
+      } else {
+        modelEntry.unknownRuns += 1;
+      }
+    });
+
+    return {
+      instanceStats: instanceMap,
+      modelStats: modelMap,
+      runStats: runMap,
+    };
+  }, [deliverables]);
+
+  const determineAggregateStatus = useCallback((resolvedRuns, totalRuns, unknownRuns) => {
+    if (resolvedRuns > 0) {
+      return 'resolved';
+    }
+    if (totalRuns - unknownRuns > 0) {
+      return 'unresolved';
+    }
+    return 'unknown';
+  }, []);
+
+  const formatResolutionSummary = useCallback((resolvedRuns, totalRuns, unknownRuns) => {
+    let summary = `${resolvedRuns}/${totalRuns} resolved`;
+    if (unknownRuns > 0) {
+      summary += ` · ${unknownRuns} unknown`;
+    }
+    return summary;
+  }, []);
+
+  useEffect(() => {
+    setSelectedInstance('');
+    setSelectedModel('');
+    setSelectedRun('');
+    setSelectedTrajectoryPath('');
+  }, [selectedLanguage]);
+
+  useEffect(() => {
+    setSelectedModel('');
+    setSelectedRun('');
+    setSelectedTrajectoryPath('');
+  }, [selectedInstance]);
+
+  useEffect(() => {
+    setSelectedRun('');
+    setSelectedTrajectoryPath('');
+  }, [selectedModel]);
+
+  const languageOptions = useMemo(() => {
+    return uniqueSorted(deliverables.map(item => item.language));
+  }, [deliverables, uniqueSorted]);
+
+  const instanceOptions = useMemo(() => {
+    const byInstance = new Map();
+    instanceStats.forEach(value => {
+      if (selectedLanguage && value.language !== selectedLanguage) {
+        return;
+      }
+      const key = value.instance;
+      const existing = byInstance.get(key);
+      if (!existing) {
+        byInstance.set(key, { ...value });
+      } else {
+        existing.totalRuns += value.totalRuns;
+        existing.resolvedRuns += value.resolvedRuns;
+        existing.unresolvedRuns += value.unresolvedRuns;
+        existing.unknownRuns += value.unknownRuns;
+      }
+    });
+    return Array.from(byInstance.values()).sort((a, b) =>
+      a.instance.localeCompare(b.instance)
+    );
+  }, [instanceStats, selectedLanguage]);
+
+  const modelOptions = useMemo(() => {
+    const byModel = new Map();
+    modelStats.forEach(value => {
+      if (selectedLanguage && value.language !== selectedLanguage) {
+        return;
+      }
+      if (selectedInstance && value.instance !== selectedInstance) {
+        return;
+      }
+      const key = value.model;
+      const existing = byModel.get(key);
+      if (!existing) {
+        byModel.set(key, { ...value });
+      } else {
+        existing.totalRuns += value.totalRuns;
+        existing.resolvedRuns += value.resolvedRuns;
+        existing.unresolvedRuns += value.unresolvedRuns;
+        existing.unknownRuns += value.unknownRuns;
+      }
+    });
+    return Array.from(byModel.values()).sort((a, b) =>
+      a.model.localeCompare(b.model)
+    );
+  }, [modelStats, selectedLanguage, selectedInstance]);
+
+  const runOptions = useMemo(() => {
+    const byRun = new Map();
+    runStats.forEach(value => {
+      if (selectedLanguage && value.language !== selectedLanguage) {
+        return;
+      }
+      if (selectedInstance && value.instance !== selectedInstance) {
+        return;
+      }
+      if (selectedModel && value.model !== selectedModel) {
+        return;
+      }
+      const existing = byRun.get(value.run);
+      if (!existing) {
+        byRun.set(value.run, {
+          run: value.run,
+          resolved: value.resolved ?? null,
+        });
+        return;
+      }
+      if (value.resolved === true) {
+        existing.resolved = true;
+      } else if (existing.resolved === null && typeof value.resolved === 'boolean') {
+        existing.resolved = value.resolved;
+      }
+    });
+    return Array.from(byRun.values()).sort((a, b) =>
+      a.run.localeCompare(b.run, undefined, { numeric: true, sensitivity: 'base' })
+    );
+  }, [runStats, selectedLanguage, selectedInstance, selectedModel]);
+
+  const trajectoryOptions = useMemo(() => {
+    return deliverables
+      .filter(item => {
+        if (selectedLanguage && item.language !== selectedLanguage) {
+          return false;
+        }
+        if (selectedInstance && item.instance !== selectedInstance) {
+          return false;
+        }
+        if (selectedModel && item.model !== selectedModel) {
+          return false;
+        }
+        if (selectedRun && item.run !== selectedRun) {
+          return false;
+        }
+        return true;
+      })
+      .map(item => ({
+        label: item.file_name,
+        value: item.relative_path,
+        meta: item,
+        resolved: typeof item.resolved === 'boolean' ? item.resolved : null,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [deliverables, selectedLanguage, selectedInstance, selectedModel, selectedRun]);
+
+  useEffect(() => {
+    if (!trajectoryOptions.some(option => option.value === selectedTrajectoryPath)) {
+      setSelectedTrajectoryPath('');
+    }
+    if (trajectoryOptions.length === 1 && !selectedTrajectoryPath) {
+      setSelectedTrajectoryPath(trajectoryOptions[0].value);
+    }
+  }, [trajectoryOptions, selectedTrajectoryPath]);
+
+  const selectedTrajectoryOption = useMemo(() => {
+    return trajectoryOptions.find(option => option.value === selectedTrajectoryPath) || null;
+  }, [trajectoryOptions, selectedTrajectoryPath]);
 
   const getStepText = (value, isStepZero = false) => {
     if (!value) return '';
@@ -204,9 +496,71 @@ function App() {
     }
   };
 
+  const handleLoadSelectedTrajectory = useCallback(async () => {
+    if (!selectedTrajectoryOption) {
+      alert('Please choose a trajectory before loading.');
+      return;
+    }
+    setIsLoadingDeliverable(true);
+    try {
+      const url = `http://localhost:5001/deliverables/trajectory?path=${encodeURIComponent(selectedTrajectoryOption.value)}`;
+      const response = await fetch(url);
+      const data = await response.json();
+      if (!response.ok || data.error) {
+        const message = data?.error || `Failed to load trajectory (status ${response.status})`;
+        throw new Error(message);
+      }
+      const content = data.content;
+      const displayName = data.file_name || selectedTrajectoryOption.meta.file_name;
+      setFileName(displayName);
+      setFileContent(content);
+      setSelectedTrajectoryMeta(selectedTrajectoryOption.meta);
+      setModifiedContent('');
+      setSelectedTrajectoryPath(selectedTrajectoryOption.value);
+      loadTrajectory(content);
+    } catch (error) {
+      console.error('Failed to load trajectory from deliverables:', error);
+      alert(`Failed to load trajectory: ${error.message}`);
+    } finally {
+      setIsLoadingDeliverable(false);
+    }
+  }, [selectedTrajectoryOption, loadTrajectory]);
+
+  const resetToSelection = useCallback(() => {
+    setTrajectory([]);
+    setHistory([]);
+    setFilteredTrajectory([]);
+    setExpandedSteps([]);
+    setFileName('');
+    setFileContent('');
+    setModifiedContent('');
+    setReplaceSearch('');
+    setReplaceWith('');
+    setEditingStep(null);
+    setEditedThought('');
+    setHasUnsavedChanges(false);
+    setGeneratingThought(null);
+    setSelectedTrajectoryMeta(null);
+    setSearchQuery('');
+    setSemanticFilter(null);
+    setChatKey(key => key + 1);
+  }, []);
+
+  const handleReturnToSelection = useCallback(() => {
+    if (hasUnsavedChanges) {
+      const proceed = window.confirm('You have unsaved changes. Continue without saving?');
+      if (!proceed) {
+        return;
+      }
+    }
+    resetToSelection();
+  }, [hasUnsavedChanges, resetToSelection]);
+
   const handleFileUpload = (event) => {
     const file = event.target.files[0];
     if (file) {
+      setSelectedTrajectoryMeta(null);
+      setSelectedTrajectoryPath('');
       setFileName(file.name);
       const reader = new FileReader();
       reader.onload = (e) => {
@@ -543,6 +897,249 @@ function App() {
     setSemanticFilter(filteredSteps);
   };
 
+  const hasLoadedTrajectory = trajectory.length > 0;
+  const selectedDeliverableSummary = selectedTrajectoryMeta
+    ? `${selectedTrajectoryMeta.language} · ${selectedTrajectoryMeta.instance} · ${selectedTrajectoryMeta.model} · ${selectedTrajectoryMeta.run}`
+    : null;
+  const selectedDeliverableResolvedValue = selectedTrajectoryMeta?.resolved;
+  const selectedDeliverableStatus = selectedTrajectoryMeta
+    ? selectedDeliverableResolvedValue === true
+      ? 'resolved'
+      : selectedDeliverableResolvedValue === false
+      ? 'unresolved'
+      : 'unknown'
+    : null;
+  const selectedDeliverableStatusLabel =
+    selectedDeliverableStatus === 'resolved'
+      ? 'Resolved'
+      : selectedDeliverableStatus === 'unresolved'
+      ? 'Unresolved'
+      : selectedDeliverableStatus === 'unknown'
+      ? 'Unknown'
+      : null;
+
+  const renderSelectionScreen = () => {
+    const languageDisabled = deliverablesLoading || languageOptions.length === 0;
+    const instanceDisabled = deliverablesLoading || !selectedLanguage || instanceOptions.length === 0;
+    const modelDisabled = deliverablesLoading || !selectedInstance || modelOptions.length === 0;
+    const runDisabled = deliverablesLoading || !selectedModel || runOptions.length === 0;
+    const trajectoryDisabled = deliverablesLoading || !selectedRun || trajectoryOptions.length === 0;
+
+    return (
+      <div className="App selection-mode">
+        <div className="selection-wrapper">
+          <header className="selection-header">
+            <h1>Trajectory Viewer</h1>
+            <p>Select a deliverable trajectory or upload a JSON/.traj file to begin.</p>
+          </header>
+          <main className="selection-main">
+            <section className="selection-card">
+              <div className="selection-card-heading">
+                <h2>Browse Deliverables</h2>
+                <button
+                  type="button"
+                  className="refresh-button"
+                  onClick={handleRefreshDeliverables}
+                  disabled={deliverablesLoading}
+                >
+                  {deliverablesLoading ? 'Refreshing…' : 'Refresh list'}
+                </button>
+              </div>
+              {deliverablesError && (
+                <div className="error-banner">
+                  {deliverablesError}
+                </div>
+              )}
+              {deliverablesLoading && !deliverablesError ? (
+                <p className="helper-text">Loading deliverables…</p>
+              ) : deliverables.length === 0 ? (
+                <p className="helper-text">No trajectories found in the deliverables folder.</p>
+              ) : (
+                <>
+                  <div className="selection-grid">
+                    <label>
+                      <span>Language</span>
+                      <select
+                        value={selectedLanguage}
+                        onChange={(e) => setSelectedLanguage(e.target.value)}
+                        disabled={languageDisabled}
+                      >
+                        <option value="">Select language</option>
+                        {languageOptions.map(option => (
+                          <option key={option} value={option}>{option}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Instance</span>
+                      <select
+                        value={selectedInstance}
+                        onChange={(e) => setSelectedInstance(e.target.value)}
+                        disabled={instanceDisabled}
+                      >
+                        <option value="">Select instance</option>
+                        {instanceOptions.map(option => {
+                          const status = determineAggregateStatus(
+                            option.resolvedRuns,
+                            option.totalRuns,
+                            option.unknownRuns
+                          );
+                          const label = `${option.instance} (${formatResolutionSummary(
+                            option.resolvedRuns,
+                            option.totalRuns,
+                            option.unknownRuns
+                          )})`;
+                          const style = STATUS_OPTION_STYLES[status] || undefined;
+                          return (
+                            <option key={option.instance} value={option.instance} style={style}>
+                              {label}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Model</span>
+                      <select
+                        value={selectedModel}
+                        onChange={(e) => setSelectedModel(e.target.value)}
+                        disabled={modelDisabled}
+                      >
+                        <option value="">Select model</option>
+                        {modelOptions.map(option => {
+                          const status = determineAggregateStatus(
+                            option.resolvedRuns,
+                            option.totalRuns,
+                            option.unknownRuns
+                          );
+                          const label = `${option.model} (${formatResolutionSummary(
+                            option.resolvedRuns,
+                            option.totalRuns,
+                            option.unknownRuns
+                          )})`;
+                          const style = STATUS_OPTION_STYLES[status] || undefined;
+                          return (
+                            <option key={option.model} value={option.model} style={style}>
+                              {label}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Run</span>
+                      <select
+                        value={selectedRun}
+                        onChange={(e) => {
+                          setSelectedRun(e.target.value);
+                          setSelectedTrajectoryPath('');
+                        }}
+                        disabled={runDisabled}
+                      >
+                        <option value="">Select run</option>
+                        {runOptions.map(option => {
+                          const resolved = option.resolved;
+                          const label =
+                            resolved === true
+                              ? `${option.run} (resolved)`
+                              : resolved === false
+                              ? `${option.run} (unresolved)`
+                              : `${option.run} (unknown)`;
+                          const status =
+                            resolved === true
+                              ? 'resolved'
+                              : resolved === false
+                              ? 'unresolved'
+                              : 'unknown';
+                          const style = STATUS_OPTION_STYLES[status] || undefined;
+                          return (
+                            <option key={option.run} value={option.run} style={style}>
+                              {label}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Trajectory</span>
+                      <select
+                        value={selectedTrajectoryPath}
+                        onChange={(e) => setSelectedTrajectoryPath(e.target.value)}
+                        disabled={trajectoryDisabled}
+                      >
+                        <option value="">Select trajectory file</option>
+                        {trajectoryOptions.map(option => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  {selectedTrajectoryOption && (
+                    <div
+                      className={`selection-summary ${
+                        selectedTrajectoryOption.resolved === true
+                          ? 'resolved'
+                          : selectedTrajectoryOption.resolved === false
+                          ? 'unresolved'
+                          : 'unknown'
+                      }`}
+                    >
+                      <span className="summary-heading">Selected:</span>
+                      <span className="summary-details">
+                        {`${selectedTrajectoryOption.meta.language} · ${selectedTrajectoryOption.meta.instance} · ${selectedTrajectoryOption.meta.model} · ${selectedTrajectoryOption.meta.run}`}
+                      </span>
+                      <span className="summary-path">{selectedTrajectoryOption.meta.relative_path}</span>
+                      <span
+                        className={`status-badge ${
+                          selectedTrajectoryOption.resolved === true
+                            ? 'resolved'
+                            : selectedTrajectoryOption.resolved === false
+                            ? 'unresolved'
+                            : 'unknown'
+                        }`}
+                      >
+                        {selectedTrajectoryOption.resolved === true
+                          ? 'Resolved'
+                          : selectedTrajectoryOption.resolved === false
+                          ? 'Unresolved'
+                          : 'Unknown'}
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
+              <div className="selection-actions">
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={handleLoadSelectedTrajectory}
+                  disabled={!selectedTrajectoryOption || isLoadingDeliverable}
+                >
+                  {isLoadingDeliverable ? 'Loading…' : 'Load trajectory'}
+                </button>
+              </div>
+            </section>
+            <section className="selection-card secondary">
+              <h2>Upload a File</h2>
+              <p className="helper-text">Upload a `.json` or `.traj` file exported from an agent run.</p>
+              <div className="file-upload-container initial-upload">
+                <input
+                  type="file"
+                  id="initial-file-upload"
+                  onChange={handleFileUpload}
+                  accept=".json,.traj"
+                />
+                <label htmlFor="initial-file-upload" className="file-upload-button">
+                  Upload Trajectory
+                </label>
+              </div>
+            </section>
+          </main>
+        </div>
+      </div>
+    );
+  };
+
   const toPlainText = (value, isStepZero = false) => getStepText(value, isStepZero) || '';
 
   const highlightText = (stringText) => {
@@ -585,6 +1182,210 @@ function App() {
       display = `${display.slice(0, 180).trimEnd()}…`;
     }
     return highlightText(display);
+  };
+
+  const renderStepZeroContent = (text) => {
+    if (!text || !text.trim()) {
+      return <span className="empty-text">—</span>;
+    }
+
+    const tagRegex = /<([a-zA-Z0-9_\-:]+)>([\s\S]*?)<\/\1>/g;
+    const segments = [];
+    let lastIndex = 0;
+    let match;
+    while ((match = tagRegex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        segments.push({ type: 'text', content: text.slice(lastIndex, match.index) });
+      }
+      segments.push({ type: 'tag', tag: match[1], content: match[2] });
+      lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < text.length) {
+      segments.push({ type: 'text', content: text.slice(lastIndex) });
+    }
+
+    const normalizeTitle = (rawTag) => {
+      const map = {
+        pr_description: 'PR Description',
+        uploaded_files: 'Uploaded Files',
+        additional_notes: 'Additional Notes'
+      };
+      if (map[rawTag]) {
+        return map[rawTag];
+      }
+      return rawTag
+        .replace(/[_-]+/g, ' ')
+        .replace(/\b\w/g, char => char.toUpperCase());
+    };
+
+  const renderParagraphGroup = (rawContent, keyPrefix) => {
+    const normalizedContent = normalizeEscapedText(rawContent || '').trim();
+    if (!normalizedContent) {
+      return [];
+    }
+    const blocks = normalizedContent.split(/\n{2,}/);
+    const parts = [];
+    blocks.forEach((block, blockIndex) => {
+      const trimmedBlock = block.trim();
+      if (!trimmedBlock) {
+        return;
+      }
+
+      if (/^#{1,6}\s+/.test(trimmedBlock)) {
+          const heading = trimmedBlock.replace(/^#{1,6}\s+/, '').trim();
+          if (heading) {
+            parts.push(
+              <h3 key={`${keyPrefix}-heading-${blockIndex}`}>{highlightText(heading)}</h3>
+            );
+          }
+          return;
+        }
+
+        const lines = trimmedBlock
+          .split('\n')
+          .map(line => line.trim())
+          .filter(Boolean);
+        if (lines.length === 0) {
+          return;
+        }
+
+        if (lines.every(line => /^[-*]\s+/.test(line))) {
+          const bullets = lines
+            .map(line => line.replace(/^[-*]\s+/, '').trim())
+            .filter(Boolean)
+            .map((item, itemIndex) => (
+              <li key={`${keyPrefix}-bullet-${blockIndex}-${itemIndex}`}>
+                {highlightText(item)}
+              </li>
+            ));
+          if (bullets.length > 0) {
+            parts.push(<ul key={`${keyPrefix}-list-${blockIndex}`}>{bullets}</ul>);
+          }
+          return;
+        }
+
+        if (lines.every(line => /^\d+\.\s+/.test(line))) {
+          const ordered = lines
+            .map(line => line.replace(/^\d+\.\s+/, '').trim())
+            .filter(Boolean)
+            .map((item, itemIndex) => (
+              <li key={`${keyPrefix}-ordered-${blockIndex}-${itemIndex}`}>
+                {highlightText(item)}
+              </li>
+            ));
+          if (ordered.length > 0) {
+            parts.push(<ol key={`${keyPrefix}-ordered-${blockIndex}`}>{ordered}</ol>);
+          }
+          return;
+        }
+
+        const paragraphText = lines.join(' ').trim();
+        if (paragraphText) {
+          parts.push(
+            <p key={`${keyPrefix}-paragraph-${blockIndex}`}>{highlightText(paragraphText)}</p>
+          );
+        }
+      });
+      return parts;
+    };
+
+    const renderMessageThread = (messages, keyPrefix) => {
+      return (
+        <div className="instructions-thread" key={`thread-${keyPrefix}`}>
+          {messages.map((message, messageIndex) => {
+            const author = message.author || message.role || 'Message';
+            const timestampRaw = message.timestamp;
+            let timestampLabel = null;
+            if (timestampRaw) {
+              try {
+                const ts = new Date(timestampRaw);
+                if (!Number.isNaN(ts.getTime())) {
+                  timestampLabel = ts.toLocaleString();
+                }
+              } catch (_) {
+                timestampLabel = timestampRaw;
+              }
+            }
+            let bodyText = '';
+            if (typeof message.content === 'string') {
+              bodyText = message.content;
+            } else if (Array.isArray(message.content)) {
+              bodyText = message.content.map(String).join('\n');
+            } else if (message.content) {
+              try {
+                bodyText = JSON.stringify(message.content, null, 2);
+              } catch (_) {
+                bodyText = String(message.content);
+              }
+            }
+            bodyText = normalizeEscapedText(bodyText || '');
+            const bodyNodes = renderParagraphGroup(bodyText, `${keyPrefix}-msg-${messageIndex}`);
+            return (
+              <div className="instructions-message" key={`thread-${keyPrefix}-msg-${messageIndex}`}>
+                <div className="instructions-message-meta">
+                  <span className="instructions-message-author">{highlightText(author)}</span>
+                  {timestampLabel && (
+                    <span className="instructions-message-timestamp">{timestampLabel}</span>
+                  )}
+                </div>
+                <div className="instructions-message-body">
+                  {bodyNodes.length > 0 ? bodyNodes : <p>{highlightText('')}</p>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    };
+
+    const elements = [];
+    segments.forEach((segment, index) => {
+      const content = segment.content ? segment.content.trim() : '';
+      if (!content) {
+        return;
+      }
+
+      if (segment.type === 'tag') {
+        const title = normalizeTitle(segment.tag);
+        let renderedBlock = null;
+        const trimmed = content.trim();
+        if (/^[\[{]/.test(trimmed)) {
+          try {
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed) && parsed.every(entry => typeof entry === 'object')) {
+              renderedBlock = renderMessageThread(parsed, `tag-${index}`);
+            }
+          } catch (_) {
+            // fall back to paragraph handling
+          }
+        }
+        const paragraphs = renderedBlock ? [] : renderParagraphGroup(content, `tag-${index}`);
+        if (renderedBlock || paragraphs.length > 0) {
+          elements.push(
+            <div className="instructions-section" key={`section-${index}`}>
+              <h3>{highlightText(title)}</h3>
+              {renderedBlock || paragraphs}
+            </div>
+          );
+        }
+        return;
+      }
+
+      const paragraphs = renderParagraphGroup(content, `text-${index}`);
+      if (paragraphs.length > 0) {
+        elements.push(
+          <div className="instructions-section" key={`text-${index}`}>
+            {paragraphs}
+          </div>
+        );
+      }
+    });
+
+    if (elements.length === 0) {
+      return <p>{highlightText(text.trim())}</p>;
+    }
+
+    return <div className="instructions-content">{elements}</div>;
   };
 
   const extractCodeFence = (text) => {
@@ -770,6 +1571,10 @@ function App() {
       return <span className="empty-text">—</span>;
     }
 
+    if (isStepZero) {
+      return renderStepZeroContent(raw);
+    }
+
     const fence = extractCodeFence(raw);
     const codeBody = fence ? fence.code : raw;
     const languageHint = fence ? fence.language : null;
@@ -782,11 +1587,72 @@ function App() {
   };
 
   const splitCommandSegments = (commandText) => {
-    return commandText
-      .split(/&&|\|\||;|\n|\r|\u2028|\u2029/)
-      .flatMap(segment => segment.split('|'))
-      .map(segment => segment.trim())
-      .filter(Boolean);
+    if (typeof commandText !== 'string') {
+      return [];
+    }
+
+    const segments = [];
+    let current = '';
+    let quoteChar = null;
+
+    const pushCurrent = () => {
+      const trimmed = current.trim();
+      if (trimmed.length > 0) {
+        segments.push(trimmed);
+      }
+      current = '';
+    };
+
+    for (let i = 0; i < commandText.length; i += 1) {
+      const char = commandText[i];
+      const next = commandText[i + 1];
+      const prev = commandText[i - 1];
+
+      if (quoteChar) {
+        current += char;
+        if (char === quoteChar && prev !== '\\') {
+          quoteChar = null;
+        }
+        continue;
+      }
+
+      if (char === '"' || char === "'" || char === '`') {
+        quoteChar = char;
+        current += char;
+        continue;
+      }
+
+      // Handle double-character separators
+      if (char === '&' && next === '&') {
+        pushCurrent();
+        i += 1;
+        continue;
+      }
+      if (char === '|' && next === '|') {
+        pushCurrent();
+        i += 1;
+        continue;
+      }
+
+      // Handle single-character separators when not quoted
+      if (char === ';' || char === '\n' || char === '\r' || char === '\u2028' || char === '\u2029') {
+        pushCurrent();
+        continue;
+      }
+
+      if (char === '|') {
+        pushCurrent();
+        continue;
+      }
+
+      current += char;
+    }
+
+    if (current.length > 0) {
+      pushCurrent();
+    }
+
+    return segments;
   };
 
   const extractPrimaryLine = (text) => {
@@ -795,6 +1661,18 @@ function App() {
     }
     const [firstLine] = text.split(/\r?\n/);
     return firstLine ? firstLine.trim() : '';
+  };
+
+  const sanitizeCommandName = (token) => {
+    if (!token) {
+      return '';
+    }
+    let cleaned = token
+      .replace(/^[^A-Za-z0-9._-]+/, '')
+      .replace(/[^A-Za-z0-9._-]+$/, '');
+    // Remove surrounding quotes if still present after initial cleanup
+    cleaned = cleaned.replace(/^["'`]+/, '').replace(/["'`]+$/, '');
+    return cleaned;
   };
 
   const normalizeCommandToken = (segment, collector) => {
@@ -826,12 +1704,12 @@ function App() {
 
     if (tokens.length === 0) return;
 
-    let primary = tokens[0].replace(/^[^A-Za-z0-9._-]+/, '').toLowerCase();
+    let primary = sanitizeCommandName(tokens[0]).toLowerCase();
     if (!primary) return;
 
     if (primary === 'sudo' && tokens.length > 1) {
       collector.add('sudo');
-      primary = tokens[1].replace(/^[^A-Za-z0-9._-]+/, '').toLowerCase();
+      primary = sanitizeCommandName(tokens[1]).toLowerCase();
     }
 
     if (primary) {
@@ -908,6 +1786,10 @@ function App() {
     }
   };
 
+  if (!hasLoadedTrajectory) {
+    return renderSelectionScreen();
+  }
+
   return (
     <div className="App">
       <div className="main-layout">
@@ -916,11 +1798,10 @@ function App() {
             <h1>Trajectory Viewer</h1>
             <div className="controls-container">
               <div className="file-upload-container">
-                <input type="file" id="file-upload" onChange={handleFileUpload} accept=".json" />
+                <input type="file" id="file-upload" onChange={handleFileUpload} accept=".json,.traj" />
                 <label htmlFor="file-upload" className="file-upload-button">
-                  Upload JSON
+                  Upload File
                 </label>
-                {fileName && <span className="file-name">{fileName}</span>}
               </div>
               <div className="search-container">
                 <input
@@ -934,6 +1815,44 @@ function App() {
                         Clear Filters
                     </button>
                 )}
+              </div>
+            </div>
+            <div
+              className={`active-selection-bar ${
+                selectedDeliverableStatus ? selectedDeliverableStatus : ''
+              }`}
+            >
+              <div className="active-selection-text">
+                {selectedDeliverableSummary ? (
+                  <>
+                    <span className="selection-label">Deliverable:</span>
+                    <span className="selection-value">{selectedDeliverableSummary}</span>
+                    <span className="selection-path">{selectedTrajectoryMeta?.relative_path}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="selection-label">Uploaded file:</span>
+                    <span className="selection-value">{fileName || 'Custom trajectory'}</span>
+                  </>
+                )}
+              </div>
+              <div className="active-selection-actions">
+                {selectedDeliverableStatusLabel && (
+                  <span
+                    className={`status-badge ${
+                      selectedDeliverableStatus ? selectedDeliverableStatus : ''
+                    }`}
+                  >
+                    {selectedDeliverableStatusLabel}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="change-selection-button"
+                  onClick={handleReturnToSelection}
+                >
+                  Choose another trajectory
+                </button>
               </div>
             </div>
           </header>

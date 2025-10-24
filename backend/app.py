@@ -6,6 +6,8 @@ import os
 import json
 import logging
 import re
+from pathlib import Path
+from typing import List, Dict, Optional
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -14,6 +16,110 @@ app = Flask(__name__)
 CORS(app)
 
 client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+DELIVERABLES_ROOT = BASE_DIR / "deliverables"
+
+
+def _sorted_dirs(path: Path) -> List[Path]:
+    try:
+        return sorted(
+            [p for p in path.iterdir() if p.is_dir()],
+            key=lambda item: item.name.lower()
+        )
+    except FileNotFoundError:
+        return []
+
+
+def _infer_resolution(metadata: Dict, instance_name: str) -> Optional[bool]:
+    if not isinstance(metadata, dict):
+        return None
+
+    # Prefer harness report resolved flag if present
+    job_result = metadata.get("job_result")
+    if isinstance(job_result, dict):
+        harness_report = job_result.get("harness_report")
+        if isinstance(harness_report, dict):
+            # Try by instance name first
+            if instance_name and instance_name in harness_report:
+                report = harness_report.get(instance_name)
+                if isinstance(report, dict):
+                    resolved_value = report.get("resolved")
+                    if isinstance(resolved_value, bool):
+                        return resolved_value
+            # Fallback to first report entry
+            for report in harness_report.values():
+                if isinstance(report, dict):
+                    resolved_value = report.get("resolved")
+                    if isinstance(resolved_value, bool):
+                        return resolved_value
+
+    eval_status = metadata.get("eval_status")
+    if isinstance(eval_status, str):
+        normalized = eval_status.strip().upper()
+        if normalized in {"RESOLVED", "SOLVED", "SUCCESS", "SUCCESSFUL"}:
+            return True
+        if normalized in {"UNRESOLVED", "UNSOLVED", "FAILED", "FAILURE"}:
+            return False
+
+    return None
+
+
+def _build_deliverables_index() -> List[Dict[str, str]]:
+    if not DELIVERABLES_ROOT.exists():
+        logging.info("Deliverables root %s not found; returning empty index", DELIVERABLES_ROOT)
+        return []
+
+    trajectories: List[Dict[str, str]] = []
+    for language_path in _sorted_dirs(DELIVERABLES_ROOT):
+        language = language_path.name
+        for instance_path in _sorted_dirs(language_path):
+            instance = instance_path.name
+            for model_path in _sorted_dirs(instance_path):
+                model = model_path.name
+                for run_path in _sorted_dirs(model_path):
+                    run = run_path.name
+                    agent_outputs = run_path / "agent_outputs"
+                    if not agent_outputs.is_dir():
+                        continue
+                    metadata_path = run_path / "metadata.json"
+                    resolved_flag: Optional[bool] = None
+                    has_metadata = metadata_path.is_file()
+                    if has_metadata:
+                        try:
+                            metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+                            resolved_flag = _infer_resolution(metadata, instance)
+                        except Exception:
+                            logging.warning("Failed to parse metadata for %s", metadata_path, exc_info=True)
+
+                    for traj_file in sorted(agent_outputs.glob("*.traj"), key=lambda p: p.name.lower()):
+                        try:
+                            relative_path = traj_file.relative_to(DELIVERABLES_ROOT)
+                        except ValueError:
+                            logging.warning("Skipping trajectory outside deliverables root: %s", traj_file)
+                            continue
+                        trajectories.append({
+                            "language": language,
+                            "instance": instance,
+                            "model": model,
+                            "run": run,
+                            "file_name": traj_file.name,
+                            "relative_path": str(relative_path).replace("\\", "/"),
+                            "resolved": resolved_flag,
+                            "metadata_path": str(metadata_path.relative_to(DELIVERABLES_ROOT)).replace("\\", "/") if has_metadata else None,
+                        })
+    return trajectories
+
+
+def _resolve_deliverable_path(relative_path: str) -> Path:
+    normalized = Path(relative_path)
+    candidate = (DELIVERABLES_ROOT / normalized).resolve()
+    root_resolved = DELIVERABLES_ROOT.resolve()
+    if not str(candidate).startswith(str(root_resolved)):
+        raise ValueError("Path escapes deliverables root")
+    if not candidate.exists():
+        raise FileNotFoundError(f"{candidate} not found")
+    return candidate
 
 def extract_content_text(content):
     """
@@ -177,6 +283,41 @@ def chat():
     except Exception as e:
         logging.error(f"An error occurred while communicating with OpenAI: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/deliverables/index', methods=['GET'])
+def deliverables_index():
+    try:
+        trajectories = _build_deliverables_index()
+        return jsonify({"trajectories": trajectories})
+    except Exception:
+        logging.exception("Failed to build deliverables index")
+        return jsonify({"error": "Failed to build deliverables index"}), 500
+
+
+@app.route('/deliverables/trajectory', methods=['GET'])
+def fetch_deliverable_trajectory():
+    relative_path = request.args.get('path')
+    if not relative_path:
+        return jsonify({"error": "Missing required 'path' parameter"}), 400
+    try:
+        target = _resolve_deliverable_path(relative_path)
+        content = target.read_text(encoding='utf-8')
+        return jsonify({
+            "file_name": target.name,
+            "relative_path": str(target.relative_to(DELIVERABLES_ROOT)).replace("\\", "/"),
+            "content": content,
+        })
+    except FileNotFoundError:
+        return jsonify({"error": "Trajectory file not found"}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except UnicodeDecodeError:
+        logging.exception("Failed to decode trajectory file %s", relative_path)
+        return jsonify({"error": "Trajectory file is not UTF-8 encoded"}), 500
+    except Exception:
+        logging.exception("Unexpected error reading trajectory %s", relative_path)
+        return jsonify({"error": "Failed to read trajectory file"}), 500
 
 @app.route('/replace', methods=['POST'])
 def replace():
