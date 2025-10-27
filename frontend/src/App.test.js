@@ -1,8 +1,10 @@
 import { render, screen } from '@testing-library/react';
 import App from './App';
 
-test('renders learn react link', () => {
+test('renders trajectory viewer selection screen', () => {
   render(<App />);
-  const linkElement = screen.getByText(/learn react/i);
-  expect(linkElement).toBeInTheDocument();
+  const heading = screen.getByRole('heading', { name: /trajectory viewer/i });
+  expect(heading).toBeInTheDocument();
+  const selectionPrompt = screen.getByText(/select a deliverable trajectory/i);
+  expect(selectionPrompt).toBeInTheDocument();
 });
